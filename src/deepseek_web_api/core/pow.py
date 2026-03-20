@@ -3,12 +3,34 @@
 import ctypes
 import logging
 import struct
+import threading
 
-from wasmtime import Linker, Module, Store
+from wasmtime import Engine, Linker, Module, Store
 
 from .config import WASM_PATH
 
 logger = logging.getLogger(__name__)
+
+# Cached WASM module - compiled once at first use
+_wasm_cache: dict[str, tuple[Engine, Linker, Module]] = {}
+_cache_lock = threading.Lock()
+
+
+def _get_cached_wasm(wasm_path: str) -> tuple[Engine, Linker, Module]:
+    """Get or create cached WASM module."""
+    if wasm_path not in _wasm_cache:
+        with _cache_lock:
+            if wasm_path not in _wasm_cache:
+                try:
+                    with open(wasm_path, "rb") as f:
+                        wasm_bytes = f.read()
+                except Exception as e:
+                    raise RuntimeError(f"Failed to load wasm file: {wasm_path}, error: {e}")
+                engine = Engine()
+                module = Module(engine, wasm_bytes)
+                linker = Linker(engine)
+                _wasm_cache[wasm_path] = (engine, linker, module)
+    return _wasm_cache[wasm_path]
 
 
 def compute_pow_answer(
@@ -35,17 +57,9 @@ def compute_pow_answer(
 
     prefix = f"{salt}_{expire_at}_"
 
-    # --- Load WASM module ---
-    store = Store()
-    linker = Linker(store.engine)
-
-    try:
-        with open(wasm_path, "rb") as f:
-            wasm_bytes = f.read()
-    except Exception as e:
-        raise RuntimeError(f"Failed to load wasm file: {wasm_path}, error: {e}")
-
-    module = Module(store.engine, wasm_bytes)
+    # --- Get cached WASM module ---
+    engine, linker, module = _get_cached_wasm(wasm_path)
+    store = Store(engine)
     instance = linker.instantiate(store, module)
     exports = instance.exports(store)
 

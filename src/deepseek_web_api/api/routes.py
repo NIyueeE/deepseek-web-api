@@ -1,6 +1,6 @@
 """DeepSeek Web API routes."""
 
-import re
+import json
 import logging
 
 from fastapi import FastAPI, Request, Response
@@ -11,6 +11,15 @@ from ..core.auth import get_auth_headers
 from ..core.pow_service import get_pow_response
 from ..core.session_store import SessionStore
 from ..core.config import DEEPSEEK_HOST
+
+# API path constants
+_PATH_CREATE_SESSION = "api/v0/chat_session/create"
+_PATH_DELETE_SESSION = "api/v0/chat_session/delete"
+_PATH_COMPLETION = "api/v0/chat/completion"
+_PATH_CREATE_POW = "api/v0/chat/create_pow_challenge"
+_PATH_UPLOAD_FILE = "api/v0/file/upload_file"
+_PATH_FETCH_FILES = "api/v0/file/fetch_files"
+_PATH_HISTORY_MESSAGES = "api/v0/chat/history_messages"
 
 logger = logging.getLogger("deepseek_web_api")
 
@@ -29,19 +38,25 @@ session_store = SessionStore.get_instance()
 
 
 def parse_sse_response_message_id(content: bytes) -> int | None:
-    """Parse SSE stream to extract response_message_id from first data line."""
+    """Parse SSE stream to extract response_message_id from ready event."""
     try:
         text = content.decode("utf-8")
         for line in text.split("\n"):
             line = line.strip()
-            if line.startswith("data:") and '"id":' in line:
-                # Match "id": followed by 10+ digits (message_id is 18 digits)
-                match = re.search(r'"id"\s*:\s*(\d{10,})', line)
-                if match:
-                    return int(match.group(1))
+            if line.startswith("data:") and "response_message_id" in line:
+                # Extract response_message_id from ready event: data: {"request_message_id":1,"response_message_id":2}
+                data_str = line[5:].strip()  # Remove "data:" prefix
+                data = json.loads(data_str)
+                return data.get("response_message_id")
     except Exception:
         pass
     return None
+
+
+def extract_chat_session_id(resp_body: bytes) -> str | None:
+    """Extract chat_session_id from DeepSeek API response."""
+    data = json.loads(resp_body)
+    return data.get("data", {}).get("biz_data", {}).get("id")
 
 
 async def proxy_to_deepseek(method, path, headers=None, json_data=None, params=None, content=None, files=None):
@@ -53,6 +68,10 @@ async def proxy_to_deepseek(method, path, headers=None, json_data=None, params=N
     else:
         headers = auth_headers
     headers["Host"] = DEEPSEEK_HOST
+
+    # For multipart file uploads, don't set Content-Type - let httpx generate it with boundary
+    if files is not None and "Content-Type" in headers:
+        del headers["Content-Type"]
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.request(
@@ -75,16 +94,14 @@ async def proxy_to_deepseek(method, path, headers=None, json_data=None, params=N
 
 async def create_session_on_deepseek() -> str | None:
     """Create session on DeepSeek backend and return the chat_session_id."""
-    import json
     resp = await proxy_to_deepseek(
         "POST",
-        "api/v0/chat_session/create",
+        _PATH_CREATE_SESSION,
         json_data={"agent": "chat"},
     )
     if resp.body:
         try:
-            data = json.loads(resp.body)
-            csid = data.get("data", {}).get("biz_data", {}).get("id")
+            csid = extract_chat_session_id(resp.body)
             if csid:
                 session_store.create_session(csid)
                 return csid
@@ -108,7 +125,7 @@ async def completion(request: Request):
     if client_chat_session_id:
         chat_session_id = client_chat_session_id
         parent_message_id = session_store.get_parent_message_id(chat_session_id)
-        if chat_session_id not in session_store.get_all_sessions():
+        if not session_store.has_session(chat_session_id):
             session_store.create_session(chat_session_id)
             parent_message_id = None
     else:
@@ -136,7 +153,7 @@ async def completion(request: Request):
     # Proxy to DeepSeek
     deepseek_resp = await proxy_to_deepseek(
         "POST",
-        "api/v0/chat/completion",
+        _PATH_COMPLETION,
         headers=headers,
         json_data=payload,
     )
@@ -170,7 +187,7 @@ async def delete_session(request: Request):
 
     return await proxy_to_deepseek(
         "POST",
-        "api/v0/chat_session/delete",
+        _PATH_DELETE_SESSION,
         json_data={"chat_session_id": chat_session_id},
     )
 
@@ -178,24 +195,21 @@ async def delete_session(request: Request):
 @app.api_route("/v0/chat/create_session", methods=["POST"])
 async def create_session(request: Request):
     """Create new session."""
-    import json
     body = await request.json()
     resp = await proxy_to_deepseek(
         "POST",
-        "api/v0/chat_session/create",
+        _PATH_CREATE_SESSION,
         json_data=body,
     )
 
     # Parse returned chat_session_id, store it, and return it explicitly
-    chat_session_id = None
     if resp.body:
         try:
-            data = json.loads(resp.body)
-            biz_data = data.get("data", {}).get("biz_data", {})
-            chat_session_id = biz_data.get("id")
+            chat_session_id = extract_chat_session_id(resp.body)
             if chat_session_id:
                 session_store.create_session(chat_session_id)
                 # Return with explicit chat_session_id at top level
+                data = json.loads(resp.body)
                 data["chat_session_id"] = chat_session_id
                 return Response(
                     content=json.dumps(data),
@@ -219,9 +233,17 @@ async def upload_file(request: Request):
     file_content = await file.read()
     files = {"file": (file.filename, file_content, file.content_type)}
 
+    # Get PoW for file upload endpoint
+    pow_response = get_pow_response(target_path="/api/v0/file/upload_file")
+    headers = {
+        "x-ds-pow-response": pow_response,
+        "x-file-size": str(len(file_content)),
+    } if pow_response else {}
+
     return await proxy_to_deepseek(
         "POST",
-        "api/v0/file/upload_file",
+        _PATH_UPLOAD_FILE,
+        headers=headers,
         files=files,
     )
 
@@ -232,7 +254,7 @@ async def fetch_files(request: Request):
     file_ids = request.query_params.get("file_ids")
     return await proxy_to_deepseek(
         "GET",
-        "api/v0/file/fetch_files",
+        _PATH_FETCH_FILES,
         params={"file_ids": file_ids},
     )
 
@@ -245,7 +267,7 @@ async def history_messages(request: Request):
     limit = request.query_params.get("limit", "20")
     return await proxy_to_deepseek(
         "GET",
-        "api/v0/chat/history_messages",
+        _PATH_HISTORY_MESSAGES,
         params={"chat_session_id": chat_session_id, "offset": offset, "limit": limit},
     )
 

@@ -57,10 +57,7 @@ CONFIG = load_config()
 # ----------------------------------------------------------------------
 DEEPSEEK_HOST = "chat.deepseek.com"
 DEEPSEEK_LOGIN_URL = f"https://{DEEPSEEK_HOST}/api/v0/users/login"
-DEEPSEEK_CREATE_SESSION_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat_session/create"
-DEEPSEEK_DELETE_SESSION_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat_session/delete"
 DEEPSEEK_CREATE_POW_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat/create_pow_challenge"
-DEEPSEEK_COMPLETION_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat/completion"
 
 BASE_HEADERS = {
     "Host": "chat.deepseek.com",
@@ -74,36 +71,5 @@ BASE_HEADERS = {
     "accept-charset": "UTF-8",
 }
 
-# DeepSeek API response codes
-DEEPSEEK_CODE_SUCCESS = 0
-DEEPSEEK_CODE_TOKEN_INVALID = 40003
-
-# HTTP status codes
-HTTP_OK = 200
-HTTP_UNAUTHORIZED = 401
-HTTP_TOO_MANY_REQUESTS = 429
-HTTP_INTERNAL_SERVER_ERROR = 500
-
-# Claude related constants
-CLAUDE_DEFAULT_MODEL = "claude-sonnet-4-20250514"
-
 # WASM module file path
 WASM_PATH = os.getenv("WASM_PATH", "sha3_wasm_bg.7b9ca65ddd.wasm")
-
-# Keep alive timeout
-KEEP_ALIVE_TIMEOUT = 120
-
-# ----------------------------------------------------------------------
-# (3) Known models list
-# ----------------------------------------------------------------------
-KNOWN_MODELS = [
-    "deepseek-chat",
-    "deepseek-reasoner",
-    "deepseek-chat-search",
-    "deepseek-reasoner-search",
-]
-
-
-def validate_model(model: str) -> bool:
-    """Check if model is in the known models list."""
-    return model.lower() in [m.lower() for m in KNOWN_MODELS]

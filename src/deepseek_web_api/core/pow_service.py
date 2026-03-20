@@ -13,13 +13,13 @@ from .pow import compute_pow_answer
 logger = logging.getLogger(__name__)
 
 
-def get_pow_response() -> str | None:
-    """Get PoW response for completion endpoint."""
+def get_pow_response(target_path: str = "/api/v0/chat/completion") -> str | None:
+    """Get PoW response for the specified endpoint."""
     headers = get_auth_headers()
     resp = requests.post(
         DEEPSEEK_CREATE_POW_URL,
         headers=headers,
-        json={"target_path": "/api/v0/chat/completion"},
+        json={"target_path": target_path},
         impersonate="safari15_3",
     )
     data = resp.json()

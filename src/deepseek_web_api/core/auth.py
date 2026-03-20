@@ -34,21 +34,16 @@ def login() -> str:
     if not password or (not email and not mobile):
         raise ValueError("Account missing required login info (email or mobile and password required)")
 
+    payload = {
+        "password": password,
+        "device_id": "deepseek_to_api",
+        "os": "android",
+    }
     if email:
-        payload = {
-            "email": email,
-            "password": password,
-            "device_id": "deepseek_to_api",
-            "os": "android",
-        }
+        payload["email"] = email
     else:
-        payload = {
-            "mobile": mobile,
-            "area_code": None,
-            "password": password,
-            "device_id": "deepseek_to_api",
-            "os": "android",
-        }
+        payload["mobile"] = mobile
+        payload["area_code"] = None
 
     resp = requests.post(
         DEEPSEEK_LOGIN_URL,

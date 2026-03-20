@@ -41,6 +41,11 @@ class SessionStore:
                 return True
             return False
 
+    def has_session(self, chat_session_id: str) -> bool:
+        """Check if session exists."""
+        with self._lock:
+            return chat_session_id in self._sessions
+
     def get_all_sessions(self) -> list[str]:
         """Get all session IDs."""
         with self._lock:

@@ -7,9 +7,10 @@ Transparent proxy for DeepSeek Chat API with automatic authentication and PoW ca
 ## Features
 
 - **Automatic Authentication**: Server manages account credentials, no client-side auth required
-- **PoW (Proof of Work)**: Automatic PoW challenge solving
+- **PoW (Proof of Work)**: Automatic PoW challenge solving for chat and file upload
 - **Session Management**: Multi-turn conversation support via `chat_session_id`
 - **SSE Streaming**: Pass-through SSE responses from DeepSeek
+- **File Upload**: Upload files and reference them in conversations via `ref_file_ids`
 
 ## Quick Start
 
@@ -36,7 +37,7 @@ uv run python main.py
 ### Endpoint Details
 
 #### POST /v0/chat/completion
-**External**: Accepts `prompt`, optional `chat_session_id`, returns SSE stream.
+**External**: Accepts `prompt`, optional `chat_session_id`, optional `ref_file_ids`, returns SSE stream.
 
 **Internal**:
 - No `chat_session_id` → Creates session via `POST /api/v0/chat_session/create`, stores locally, returns `X-Chat-Session-Id` header
@@ -66,16 +67,19 @@ uv run python main.py
 - Adds `Authorization` header, proxies to `GET /api/v0/chat/history_messages`
 
 #### POST /v0/chat/upload_file
-**External**: Multipart form with `file` field, returns DeepSeek response.
+**External**: Multipart form with `file` field, returns file ID with `PENDING` status.
 
 **Internal**:
-- Reads file from form, proxies to `POST /api/v0/file/upload_file`
+- Reads file from form, calculates PoW for `/api/v0/file/upload_file` endpoint
+- Adds `Authorization`, `x-ds-pow-response`, `x-file-size` headers
+- Proxies to `POST /api/v0/file/upload_file`
 
 #### GET /v0/chat/fetch_files
 **External**: Query param `file_ids` (comma-separated), returns file status.
 
 **Internal**:
 - Adds `Authorization` header, proxies to `GET /api/v0/file/fetch_files`
+- File status: `PENDING` = parsing, `SUCCESS` = done, `FAILED` = error
 
 See [API.md](./API.md) for detailed documentation.
 

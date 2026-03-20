@@ -14,12 +14,25 @@
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
+| `/` | GET | 服务健康检查 |
 | `/completion` | POST | 发送对话，透传 SSE |
 | `/delete` | POST | 删除 session |
 | `/upload_file` | POST | 上传文件 |
 | `/fetch_files` | GET | 查询文件状态 |
 | `/history_messages` | GET | 获取历史消息 |
 | `/create_session` | POST | 创建新 session |
+
+---
+
+## 0. GET /
+
+服务健康检查。
+
+### 响应
+
+```json
+{"status":"ok","service":"deepseek-web-api"}
+```
 
 ---
 
@@ -49,7 +62,66 @@
 
 ### 响应
 
-透传 DeepSeek SSE 流。
+SSE 流，每个 event 类型：
+
+**ready 事件**（连接建立）：
+```
+event: ready
+data: {"request_message_id":1,"response_message_id":2}
+```
+
+**update_session 事件**（会话更新）：
+```
+event: update_session
+data: {"updated_at":1774012749.15355}
+```
+
+**消息内容事件**（逐字输出）：
+```
+data: {"v":{"response":{"message_id":2,"parent_id":1,"model":"","role":"ASSISTANT","thinking_enabled":true,"ban_edit":false,"ban_regenerate":false,"status":"WIP","accumulated_token_usage":0,"files":[],"feedback":null,"inserted_at":1774012749.149245,"search_enabled":true,"content":"","thinking_content":null,"thinking_elapsed_secs":null,"search_status":null,"search_results":null,"tips":[]}}
+```
+
+**内容片段事件**（流式文本）：
+```
+data: {"p":"response/thinking_content","v":"嗯"}
+data: {"o":"APPEND","v":"，"}
+data: {"v":"用户"}
+data: {"v":"问"}
+data: {"v":"了一个"}
+data: {"v":"非常"}
+data: {"v":"基础的"}
+...
+```
+
+**完成事件**（最终状态）：
+```
+data: {"p":"response/status","v":"FINISHED"}
+```
+
+**finish 事件**（流结束）：
+```
+event: finish
+data: {}
+```
+
+**title 事件**（会话标题）：
+```
+event: title
+data: {"content":"会话标题"}
+```
+
+**close 事件**（连接关闭）：
+```
+event: close
+data: {"click_behavior":"none","auto_resume":false}
+```
+
+**新会话响应头**（首次请求无 chat_session_id 时）：
+```
+x-chat-session-id: <chat_session_id>
+```
+
+> **注意**：连续对话通过 `parent_message_id` 实现，response_message_id 会作为下一次请求的 parent_message_id。
 
 ### 包装逻辑
 
@@ -87,7 +159,9 @@
 
 ### 响应
 
-透传 DeepSeek 响应。
+```json
+{"code":0,"msg":"","data":{"biz_code":0,"biz_msg":"","biz_data":null}}
+```
 
 ### 包装逻辑
 
@@ -110,11 +184,31 @@
 
 ### 响应
 
-透传 DeepSeek 响应。
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "biz_code": 0,
+    "biz_msg": "",
+    "biz_data": {
+      "id": "file-d3983c30-0679-425c-a3c0-6596940052f9",
+      "status": "PENDING",
+      "file_name": "README.md",
+      "previewable": false,
+      "file_size": 3154,
+      "token_usage": 0,
+      "error_code": null,
+      "inserted_at": 1774017375.563,
+      "updated_at": 1774017375.563
+    }
+  }
+}
+```
 
 ### 包装逻辑
 
-添加 Authorization header，转发至 `POST /api/v0/file/upload_file`
+添加 Authorization header、x-ds-pow-response、x-file-size，转发至 `POST /api/v0/file/upload_file`
 
 ---
 
@@ -134,7 +228,33 @@ GET /fetch_files?file_ids=file-xxx,file-yyy
 
 ### 响应
 
-透传 DeepSeek 响应。
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "biz_code": 0,
+    "biz_msg": "",
+    "biz_data": {
+      "files": [
+        {
+          "id": "file-xxx",
+          "status": "SUCCESS",
+          "file_name": "README.md",
+          "previewable": true,
+          "file_size": 3154,
+          "token_usage": 817,
+          "error_code": null,
+          "inserted_at": 1774017375.563,
+          "updated_at": 1774017639.0
+        }
+      ]
+    }
+  }
+}
+```
+
+> **status 说明**：`PENDING` = 解析中，`SUCCESS` = 解析完成，`FAILED` = 解析失败
 
 ### 包装逻辑
 
@@ -160,7 +280,33 @@ GET /history_messages?chat_session_id=xxx&offset=0&limit=20
 
 ### 响应
 
-透传 DeepSeek 响应。
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "biz_code": 0,
+    "biz_msg": "",
+    "biz_data": {
+      "chat_session": {
+        "id": "acd61ee0-ceaa-426c-aaf2-5e91f6e8792c",
+        "title": null,
+        "title_type": "WIP",
+        "pinned": false,
+        "updated_at": 1774012756.515,
+        "seq_id": 196175956,
+        "agent": "chat",
+        "version": 0,
+        "current_message_id": null,
+        "inserted_at": 1774012756.515
+      },
+      "chat_messages": [],
+      "cache_valid": false,
+      "route_id": null
+    }
+  }
+}
+```
 
 ### 包装逻辑
 
@@ -182,7 +328,30 @@ GET /history_messages?chat_session_id=xxx&offset=0&limit=20
 
 ### 响应
 
-透传 DeepSeek 响应。
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "biz_code": 0,
+    "biz_msg": "",
+    "biz_data": {
+      "id": "acd61ee0-ceaa-426c-aaf2-5e91f6e8792c",
+      "seq_id": 196175956,
+      "agent": "chat",
+      "model_type": "DEFAULT",
+      "title": null,
+      "title_type": "WIP",
+      "version": 0,
+      "current_message_id": null,
+      "pinned": false,
+      "inserted_at": 1774012756.515,
+      "updated_at": 1774012756.515
+    }
+  },
+  "chat_session_id": "acd61ee0-ceaa-426c-aaf2-5e91f6e8792c"
+}
+```
 
 ### 包装逻辑
 
