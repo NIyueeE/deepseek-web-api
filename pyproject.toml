@@ -12,3 +12,9 @@ dependencies = [
     "uvicorn>=0.42.0",
     "wasmtime>=42.0.0",
 ]
+
+[dependency-groups]
+dev = [
+    "openai>=2.29.0",
+    "ruff>=0.15.7",
+]

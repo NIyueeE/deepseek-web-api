@@ -10,3 +10,5 @@ build
 dist
 
 config.toml
+
+test*

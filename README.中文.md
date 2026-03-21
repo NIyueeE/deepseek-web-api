@@ -2,7 +2,7 @@
 
 [English](./README.md) | [中文](./README.中文.md)
 
-DeepSeek Chat API 的透明代理，提供自动认证和 PoW 计算。
+受 [deepseek2api](https://github.com/iidamie/deepseek2api) 启发。DeepSeek Chat API 的透明代理，提供自动认证和 PoW 计算。
 
 ## 特性
 
@@ -10,6 +10,8 @@ DeepSeek Chat API 的透明代理，提供自动认证和 PoW 计算。
 - **PoW (工作量证明)**: 自动解决 PoW 挑战
 - **会话管理**: 通过 `chat_session_id` 支持多轮对话
 - **SSE 流式响应**: 透传 DeepSeek 的 SSE 响应
+- **OpenAI 兼容 API**: `/v1/chat/completions` 端点，完整工具调用支持
+- **流式工具调用**: 提取并转换 `[TOOL🛠️]...[/TOOL🛠️]` 标记为 OpenAI `delta.tool_calls` 格式
 
 ## 快速开始
 
@@ -22,16 +24,108 @@ cp config.toml.example config.toml
 uv run python main.py
 ```
 
+**注意**：仅支持单用户模式，以防止对 DeepSeek 服务器造成过多负载。不会实现多用户请求。
+
+## 配置
+
+运行前需要配置 `config.toml`：
+
+```toml
+[account]
+email = "your_email@example.com"      # DeepSeek 账号邮箱
+password = "your_password"           # DeepSeek 账号密码
+token = "your_deepseek_token"       # DeepSeek 认证令牌（提供邮箱/密码时可省略）
+```
+
+**安全提示**：`/v1/chat/completions` 端点没有 API Token 验证。**请务必将服务运行在 `127.0.0.1`**（`main.py` 默认值），以防止未授权访问。
+
+## 模型
+
+通过 `/v1/models` 可用的模型：
+
+| 模型 | 说明 |
+|------|------|
+| `deepseek-web-chat` | 标准对话模型，禁用思考 |
+| `deepseek-web-reasoner` | 推理模型，支持思维链 |
+
+**注意**：默认禁用内部搜索功能（无网页搜索）。
+
+## 使用案例
+
+[AstrBot](https://github.com/AstrBotDevs/AstrBot) 集成示例，流式思考和工具调用正常工作：
+
+![AstrBot with deepseek-web-reasoner](./assets/reasoner-show.png)
+
 ## API 端点
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
+| `/v1/chat/completions` | POST | OpenAI兼容对话接口，支持工具调用 |
 | `/v0/chat/completion` | POST | 发送对话，透传 SSE |
 | `/v0/chat/create_session` | POST | 创建新会话 |
 | `/v0/chat/delete` | POST | 删除会话 |
 | `/v0/chat/history_messages` | GET | 获取聊天历史 |
 | `/v0/chat/upload_file` | POST | 上传文件 |
 | `/v0/chat/fetch_files` | GET | 查询文件状态 |
+
+### 端点详情
+
+#### POST /v1/chat/completions
+OpenAI兼容的对话完成接口，支持完整的工具调用功能。
+
+**功能**:
+- 接受OpenAI风格的 `messages` 数组，支持角色：`system`、`user`、`assistant`、`tool`
+- 支持 `tool_calls` 在助手消息中，用于多轮工具对话
+- 工具结果作为 `role: "tool"` 传递，包含 `tool_call_id` 和 `content`
+- 流式响应：提取 `[TOOL🛠️]...[/TOOL🛠️]` 标记并转换为 `delta.tool_calls` 数据块
+- 非流式响应：从完整响应文本中提取工具调用
+- 基于模型的行为：`deepseek-web-reasoner` 启用思考/推理内容
+
+**请求体**:
+```json
+{
+  "model": "deepseek-web-reasoner",
+  "messages": [
+    {"role": "user", "content": "天气怎么样？"}
+  ],
+  "stream": false,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "获取城市天气",
+        "parameters": {
+          "type": "object",
+          "properties": {"city": {"type": "string"}},
+          "required": ["city"]
+        }
+      }
+    }
+  ]
+}
+```
+
+**响应** (含工具调用):
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "...",
+      "tool_calls": [{
+        "id": "call_xxx",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": "{\"city\": \"北京\"}"}
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}
+```
 
 ### 端点详情
 
@@ -79,11 +173,21 @@ uv run python main.py
 
 详见 [API.md](./API.md)。
 
+## 实现说明
+
+### OpenAI 适配器 (`/v1/chat/completions`)
+OpenAI兼容适配器通过向内部 `/v0/chat/completion` 端点注入提示词来工作：
+- 将 OpenAI 的 `messages` 数组转换为带角色标记的提示词格式
+- 将工具schema注入系统指令，说明使用 `[TOOL🛠️]...[/TOOL🛠️]` 格式回复
+- 实时解析流式SSE响应，提取工具调用标记
+- 通过将工具结果作为 `[TOOL_RESULT]` 标记传回来支持多轮对话
+
 ## TODO
 
 - [x] 简单包装 deepseek_web_chat API
-- [ ] 实现 claude_message 协议代理
-- [ ] 实现 openai_chat_completions 协议代理
+- [x] 实现 openai_chat_completions 协议适配器
+- [x] openai适配器的流式工具调用提取
+- [ ] 通过 [litellm](https://github.com/BerriAI/litellm) 实现 claude_message 协议适配器（转换OpenAI协议到Claude协议）
 
 ## 架构
 
@@ -94,3 +198,11 @@ uv run python main.py
               +-- PoW 求解
               +-- 会话状态管理
 ```
+
+## 免责声明
+
+DeepSeek 官方 API 非常便宜，请大家多多支持官方服务。
+
+本项目的初心是想体验官方网页端灰度测试的最新模型。
+
+**严禁商用**，避免对官方服务器造成压力，否则风险自担。
