@@ -11,13 +11,16 @@ Setup:
 
 Requires:
     pip install openai
+
+Environment:
+    SMOKE_OPENAI_BASE_URL   Defaults to http://localhost:5001/v1
+    SMOKE_OPENAI_API_KEY    Defaults to test-key
 """
 
 import asyncio
+import os
 
 import pytest
-
-
 
 class TestV1ChatCompletionsSmoke:
     """Smoke tests for v1/chat/completions with OpenAI SDK."""
@@ -44,8 +47,8 @@ class TestV1ChatCompletionsSmoke:
         """Create OpenAI client pointing to local server."""
         from openai import OpenAI
         return OpenAI(
-            api_key="test-key",
-            base_url="http://localhost:5001/v1",
+            api_key=os.getenv("SMOKE_OPENAI_API_KEY", "test-key"),
+            base_url=os.getenv("SMOKE_OPENAI_BASE_URL", "http://localhost:5001/v1"),
         )
 
     def test_streaming_basic(self):

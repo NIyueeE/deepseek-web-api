@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pathlib
+from typing import Any
 
 try:
     import tomllib as toml
@@ -58,6 +59,11 @@ def _get_server_config() -> dict:
     return CONFIG.get("server", {})
 
 
+def _get_auth_config() -> dict:
+    auth_cfg = CONFIG.get("auth", {})
+    return auth_cfg if isinstance(auth_cfg, dict) else {}
+
+
 def _get_env_or_config(env_name: str, config_key: str, default):
     env_value = os.getenv(env_name)
     if env_value is not None:
@@ -89,6 +95,52 @@ def _parse_csv_or_list(value, default: list[str]) -> list[str]:
         return [item for item in items if item]
     return list(default)
 
+
+def _normalize_auth_token_entry(
+    raw_entry: Any,
+    *,
+    fallback_name: str,
+    default_enabled: bool = True,
+) -> dict[str, Any] | None:
+    if not isinstance(raw_entry, dict):
+        return None
+
+    token = str(raw_entry.get("token", "")).strip()
+    if not token:
+        return None
+
+    name = str(raw_entry.get("name", "")).strip() or fallback_name
+    enabled = _parse_bool(raw_entry.get("enabled"), default_enabled)
+    return {"name": name, "token": token, "enabled": enabled}
+
+
+def _get_explicit_auth_tokens() -> list[dict[str, Any]]:
+    auth_cfg = _get_auth_config()
+    raw_tokens = auth_cfg.get("tokens", [])
+    if not isinstance(raw_tokens, list):
+        return []
+
+    tokens = []
+    for index, raw_entry in enumerate(raw_tokens, start=1):
+        normalized = _normalize_auth_token_entry(
+            raw_entry,
+            fallback_name=f"auth-token-{index}",
+        )
+        if normalized:
+            tokens.append(normalized)
+    return tokens
+
+
+def _get_legacy_auth_token_entry() -> dict[str, Any] | None:
+    token = get_local_api_key()
+    if not token:
+        return None
+    return {
+        "name": "legacy-api-key",
+        "token": token,
+        "enabled": True,
+    }
+
 # ----------------------------------------------------------------------
 # (2) DeepSeek API constants
 # ----------------------------------------------------------------------
@@ -114,7 +166,7 @@ LOG_LEVEL = getattr(logging, _log_level_str, logging.WARNING)
 
 
 def get_local_api_key() -> str:
-    """Get optional local API key for protecting this proxy service.
+    """Get the legacy compatibility API key for protecting this proxy service.
 
     Environment variable takes precedence over config.toml.
     """
@@ -124,6 +176,57 @@ def get_local_api_key() -> str:
 
     server_cfg = _get_server_config()
     return str(server_cfg.get("api_key", "")).strip()
+
+
+def get_auth_required() -> bool:
+    """Return whether auth is explicitly required for /v0 and /v1."""
+    return _parse_bool(_get_auth_config().get("required"), False)
+
+
+def get_auth_tokens() -> list[dict[str, Any]]:
+    """Return normalized auth token entries from legacy and formal config sources."""
+    tokens = []
+
+    legacy_token = _get_legacy_auth_token_entry()
+    if legacy_token:
+        tokens.append(legacy_token)
+
+    tokens.extend(_get_explicit_auth_tokens())
+    return tokens
+
+
+def get_enabled_auth_tokens() -> list[str]:
+    """Return enabled auth token values from all supported config sources."""
+    return [entry["token"] for entry in get_auth_tokens() if entry["enabled"]]
+
+
+def has_effective_auth_tokens() -> bool:
+    """Return True when at least one enabled auth token is configured."""
+    return bool(get_enabled_auth_tokens())
+
+
+def get_auth_mode_name() -> str:
+    """Describe which auth config source(s) are currently in effect."""
+    has_legacy = _get_legacy_auth_token_entry() is not None
+    has_explicit = bool(_get_explicit_auth_tokens())
+
+    if has_legacy and has_explicit:
+        return "mixed compatibility mode"
+    if has_explicit:
+        return "formal auth.tokens mode"
+    if has_legacy:
+        return "legacy single-token compatibility mode"
+    return "anonymous mode"
+
+
+def get_auth_mode_summary() -> str:
+    """Return a log-safe summary of the active auth mode."""
+    enabled_count = len(get_enabled_auth_tokens())
+    required = get_auth_required()
+    return (
+        f"Auth mode: {get_auth_mode_name()}; "
+        f"{enabled_count} enabled token(s); required={required}."
+    )
 
 
 def get_server_host() -> str:
