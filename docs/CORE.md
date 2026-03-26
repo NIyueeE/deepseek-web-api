@@ -18,6 +18,14 @@ email = "..."
 password = "..."
 token = "..."      # 登录后自动填充
 
+[auth]             # 服务端鉴权
+required = false
+
+[[auth.tokens]]
+name = "prod-gateway"
+token = "sk-..."
+enabled = true
+
 [headers]          # HTTP 请求头（透传给 DeepSeek）
 Host = "chat.deepseek.com"
 User-Agent = "DeepSeek/1.3.0 Android/35"
@@ -41,6 +49,11 @@ impersonate = "safari15_3"
 | `BASE_HEADERS` | 从配置读取的 HTTP 请求头 |
 | `DEFAULT_IMPERSONATE` | 浏览器伪装标识 |
 | `WASM_PATH` | WASM 模块文件路径 |
+| `get_local_api_key()` | 读取旧兼容模式 token（环境变量优先） |
+| `get_auth_required()` | 读取 `[auth].required` |
+| `get_auth_tokens()` | 读取归一化后的全部 token（含旧兼容来源） |
+| `get_enabled_auth_tokens()` | 读取所有启用中的 token 值 |
+| `has_effective_auth_tokens()` | 是否存在启用中的 token |
 
 ---
 

@@ -5,11 +5,24 @@ log_level = "WARNING"
 host = "127.0.0.1"  # 建议保持 loopback，仅本机访问
 port = 5001
 reload = true
-api_key = ""  # 可选，本地代理鉴权。设置后，/v0 和 /v1 请求需携带 Bearer token 或 X-API-Key
+api_key = ""  # 兼容模式 token；DEEPSEEK_WEB_API_KEY 会覆盖它，并与 [auth.tokens] 合并生效
 cors_origins = ["*"]  # 生产环境建议改成明确白名单
 cors_allow_credentials = false
 cors_allow_methods = ["*"]
 cors_allow_headers = ["*"]
+
+[auth]
+required = false  # true 且没有任何 enabled token 时，/v0 和 /v1 会统一返回 401
+
+[[auth.tokens]]
+name = "prod-gateway"
+token = ""
+enabled = true
+
+[[auth.tokens]]
+name = "ops-debug"
+token = ""
+enabled = false
 
 [account]
 email = "your_email@example.com"  # 邮箱登录（优先）

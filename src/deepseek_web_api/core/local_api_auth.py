@@ -1,8 +1,10 @@
 """Local API authentication for protecting this proxy service."""
 
+import secrets
+
 from fastapi import HTTPException, Request, status
 
-from .config import get_local_api_key
+from .config import get_auth_required, get_enabled_auth_tokens
 
 
 def _extract_request_token(request: Request) -> str:
@@ -24,14 +26,18 @@ def requires_local_api_auth(path: str) -> bool:
 
 
 def verify_local_api_auth(request: Request) -> None:
-    """Validate local API auth when an API key is configured."""
-    expected_token = get_local_api_key()
-    if not expected_token:
+    """Validate local API auth against enabled auth tokens."""
+    expected_tokens = get_enabled_auth_tokens()
+    auth_required = get_auth_required()
+
+    if not auth_required and not expected_tokens:
         return
 
     provided_token = _extract_request_token(request)
-    if provided_token == expected_token:
-        return
+    if provided_token:
+        for expected_token in expected_tokens:
+            if secrets.compare_digest(provided_token, expected_token):
+                return
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

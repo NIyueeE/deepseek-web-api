@@ -37,11 +37,24 @@ uv run python main.py
 host = "127.0.0.1"                  # Recommended: keep loopback-only
 port = 5001
 reload = true
-api_key = ""                         # Optional local API key for /v0 and /v1
+api_key = ""                         # Compatibility token; merged with [auth.tokens]
 cors_origins = ["*"]                 # Recommended: replace with explicit origins for browser clients
 cors_allow_credentials = false
 cors_allow_methods = ["*"]
 cors_allow_headers = ["*"]
+
+[auth]
+required = false                     # true with zero enabled tokens => all /v0 and /v1 requests return 401
+
+[[auth.tokens]]
+name = "prod-gateway"
+token = "sk-prod-xxx"
+enabled = true
+
+[[auth.tokens]]
+name = "ops-debug"
+token = "sk-ops-yyy"
+enabled = false
 
 [account]
 email = "your_email@example.com"   # Email login (priority)
@@ -52,8 +65,11 @@ token = ""                         # Optional, system will auto-manage (saved af
 ```
 
 **Security**:
-- By default, local API auth is disabled for backwards compatibility.
-- If you set `[server].api_key` or environment variable `DEEPSEEK_WEB_API_KEY`, all `/v0/*` and `/v1/*` endpoints require either `Authorization: Bearer <token>` or `X-API-Key: <token>`.
+- Preferred configuration is `[auth]` plus `[[auth.tokens]]`.
+- `[server].api_key` and environment variable `DEEPSEEK_WEB_API_KEY` remain supported as compatibility mode inputs.
+- `DEEPSEEK_WEB_API_KEY` overrides `[server].api_key`, and that legacy token is merged with all enabled `auth.tokens`.
+- If at least one enabled token exists, all `/v0/*` and `/v1/*` endpoints require either `Authorization: Bearer <token>` or `X-API-Key: <token>`.
+- If `auth.required = true` and no enabled token exists, the server still starts but every `/v0/*` and `/v1/*` request returns `401`.
 - `main.py` now reads `[server].host`, `[server].port`, and `[server].reload`.
 - CORS is configurable via `[server].cors_*`. The default remains permissive for compatibility, but you should narrow `cors_origins` before exposing browser clients.
 - You should still run the service on `127.0.0.1` unless you intentionally expose it.

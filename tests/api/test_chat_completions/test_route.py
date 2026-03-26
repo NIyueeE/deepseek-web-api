@@ -113,8 +113,12 @@ class TestChatCompletionsRoute:
             return FailingPool()
 
         monkeypatch.setattr(
-            "deepseek_web_api.core.local_api_auth.get_local_api_key",
-            lambda: "",
+            "deepseek_web_api.core.local_api_auth.get_auth_required",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            "deepseek_web_api.core.local_api_auth.get_enabled_auth_tokens",
+            lambda: [],
         )
         monkeypatch.setattr(
             "deepseek_web_api.api.openai.chat_completions.route.get_pool",
