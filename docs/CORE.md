@@ -45,8 +45,8 @@ impersonate = "safari15_3"
 | `DEFAULT_IMPERSONATE` | 浏览器伪装标识 |
 | `WASM_PATH` | WASM 模块文件路径 |
 | `get_auth_tokens()` | 读取 `auth.tokens` 字符串数组（非空则需要鉴权） |
-| `get_pool_size()` | 读取 session pool 最大并发数（默认 10，环境变量 `DEEPSEEK_WEB_POOL_SIZE`） |
-| `get_pool_acquire_timeout()` | 读取等待 session 的超时秒数（默认 30.0，环境变量 `DEEPSEEK_WEB_POOL_ACQUIRE_TIMEOUT`） |
+| `get_pool_size()` | 读取 session pool 最大并发数（默认 10） |
+| `get_pool_acquire_timeout()` | 读取等待 session 的超时秒数（默认 30.0） |
 | `get_server_host()` | 读取 `[server].host` |
 | `get_server_port()` | 读取 `[server].port` |
 | `get_server_reload()` | 读取 `[server].reload` |

@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.135.1",
     "httpx>=0.28.1",
     "python-multipart>=0.0.22",
+    "socksio>=1.0.0",
     "tomli-w>=1.2.0",
     "uvicorn>=0.42.0",
     "wasmtime>=42.0.0",

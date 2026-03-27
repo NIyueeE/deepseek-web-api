@@ -1,3 +1,7 @@
+# Docker 封装预留路径（通过环境变量覆盖）：
+# CONFIG_PATH: 配置文件路径，默认 config.toml
+# WASM_PATH:   WASM 模块路径，默认 core/ 下同目录文件
+
 # 日志级别: DEBUG, INFO, WARNING, ERROR
 log_level = "WARNING"
 
@@ -9,8 +13,8 @@ cors_origins = ["*"]  # 生产环境建议改成明确白名单
 cors_allow_credentials = false
 cors_allow_methods = ["*"]
 cors_allow_headers = ["*"]
-pool_size = 10              # 最大并发 DeepSeek session 数；超出时请求等待（环境变量: DEEPSEEK_WEB_POOL_SIZE）
-pool_acquire_timeout = 30.0 # 等待可用 session 的超时秒数，超时返回 503（环境变量: DEEPSEEK_WEB_POOL_ACQUIRE_TIMEOUT）
+pool_size = 10              # 最大并发 DeepSeek session 数；超出时请求等待，超时返回 503
+pool_acquire_timeout = 30.0 # 等待可用 session 的超时秒数，超时返回 503
 
 [auth]
 # 鉴权 token 列表；非空列表表示需要鉴权，空列表仅在 loopback 时允许

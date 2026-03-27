@@ -119,17 +119,11 @@ def get_auth_tokens() -> list[str]:
 
 def get_pool_size() -> int:
     """Max concurrent DeepSeek sessions in the stateless session pool."""
-    env_val = os.getenv("DEEPSEEK_WEB_POOL_SIZE")
-    if env_val is not None:
-        return int(env_val)
     return int(_get_server_config().get("pool_size", 10))
 
 
 def get_pool_acquire_timeout() -> float:
     """Seconds to wait for an available session before returning 503."""
-    env_val = os.getenv("DEEPSEEK_WEB_POOL_ACQUIRE_TIMEOUT")
-    if env_val is not None:
-        return float(env_val)
     return float(_get_server_config().get("pool_acquire_timeout", 30.0))
 
 

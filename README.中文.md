@@ -43,8 +43,8 @@ cors_origins = ["*"]                 # 建议改成明确白名单
 cors_allow_credentials = false
 cors_allow_methods = ["*"]
 cors_allow_headers = ["*"]
-pool_size = 10                       # 最大并发 DeepSeek session 数（环境变量: DEEPSEEK_WEB_POOL_SIZE）
-pool_acquire_timeout = 30.0          # 等待可用 session 的超时秒数，超时返回 503（环境变量: DEEPSEEK_WEB_POOL_ACQUIRE_TIMEOUT）
+pool_size = 10                       # 最大并发 DeepSeek session 数；超出时请求等待，超时返回 503
+pool_acquire_timeout = 30.0          # 等待可用 session 的超时秒数，超时返回 503
 
 [auth]
 tokens = []                          # 配置一个或多个 token 启用鉴权
@@ -57,6 +57,10 @@ area_code = "86"                   # 手机号区号，如 "86"
 password = "your_password"
 token = ""                         # 非必须，系统会自动管理（首次使用后保存）
 ```
+
+**Docker / 环境变量预留**:
+- `CONFIG_PATH`: 配置文件路径（env: `CONFIG_PATH`，默认 `config.toml`）
+- `WASM_PATH`: WASM 模块路径（env: `WASM_PATH`，默认 `core/sha3_wasm_bg.7b9ca65ddd.wasm`）
 
 **安全提示**：
 - `[auth].tokens` 是简单的字符串数组。非空数组表示需要鉴权；空数组表示匿名访问（仅在 loopback 时安全）。

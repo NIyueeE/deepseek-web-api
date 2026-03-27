@@ -43,8 +43,8 @@ cors_origins = ["*"]                 # Recommended: replace with explicit origin
 cors_allow_credentials = false
 cors_allow_methods = ["*"]
 cors_allow_headers = ["*"]
-pool_size = 10                       # Max concurrent DeepSeek sessions (env: DEEPSEEK_WEB_POOL_SIZE)
-pool_acquire_timeout = 30.0          # Seconds to wait for a free session before returning 503 (env: DEEPSEEK_WEB_POOL_ACQUIRE_TIMEOUT)
+pool_size = 10                       # Max concurrent DeepSeek sessions; requests wait when at capacity, 503 on timeout
+pool_acquire_timeout = 30.0           # Seconds to wait for a free session before returning 503
 
 [auth]
 tokens = []                          # Configure one or more tokens to enable auth
@@ -57,6 +57,10 @@ area_code = "86"                   # Phone area code, e.g. "86"
 password = "your_password"
 token = ""                         # Optional, system will auto-manage (saved after first use)
 ```
+
+**Docker / Env var overrides**:
+- `CONFIG_PATH`: Config file path (env: `CONFIG_PATH`, default `config.toml`)
+- `WASM_PATH`: WASM module path (env: `WASM_PATH`, default `core/sha3_wasm_bg.7b9ca65ddd.wasm`)
 
 **Security**:
 - `[auth].tokens` is a simple string array. Non-empty array means auth is required; empty array means anonymous access (only safe for loopback).
