@@ -96,7 +96,7 @@ class TestV0ApiSmoke:
 
         # 4. Delete session
         await delete_session(session_id)
-        print(f"[4] Session deleted")
+        print("[4] Session deleted")
 
         # 5. Multi-turn conversation (new session)
         session_id2, _ = await create_session()
@@ -133,7 +133,7 @@ class TestV0ApiSmoke:
         text2 = self._parse_sse_text(chunks2)
         print(f"[5b] Second response: {repr(text2)}")
         assert "42" in text2, f"Second should contain '42', got: {repr(text2)}"
-        print(f"[5] Multi-turn conversation verified: both responses contain '42'")
+        print("[5] Multi-turn conversation verified: both responses contain '42'")
 
         # 6. Get history and verify both "42" messages
         history_resp = await get_history_messages(session_id2, offset=0, limit=10)
@@ -217,5 +217,5 @@ class TestV0ApiSmoke:
             print(f"[{3+i}] Verified stateless: model did not say '42'")
 
         await delete_session(session_id)
-        print(f"[4] Session deleted")
+        print("[4] Session deleted")
         print("=== Message stateless test completed ===")

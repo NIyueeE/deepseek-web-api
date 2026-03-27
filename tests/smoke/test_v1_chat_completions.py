@@ -17,10 +17,8 @@ Environment:
     SMOKE_OPENAI_API_KEY    Defaults to test-key
 """
 
-import asyncio
 import os
 
-import pytest
 
 class TestV1ChatCompletionsSmoke:
     """Smoke tests for v1/chat/completions with OpenAI SDK."""

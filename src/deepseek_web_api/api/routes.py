@@ -1,7 +1,5 @@
 """DeepSeek Web API routes."""
 
-import logging
-
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -28,9 +26,6 @@ from .v0_service import (
 )
 
 # API path constants - kept for reference, actual paths defined in v0_service.py
-
-logger = logging.getLogger("deepseek_web_api")
-
 
 def get_cors_middleware_options() -> dict:
     options = {

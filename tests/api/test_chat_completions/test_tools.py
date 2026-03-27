@@ -1,7 +1,6 @@
 """Unit tests for tools.py - tool parsing and conversion utilities."""
 
 import json
-import pytest
 
 
 from deepseek_web_api.api.openai.chat_completions.tools import (

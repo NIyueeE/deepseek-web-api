@@ -1,6 +1,5 @@
 """Unit tests for messages.py - message conversion utilities."""
 
-import pytest
 
 
 from deepseek_web_api.api.openai.chat_completions.messages import (

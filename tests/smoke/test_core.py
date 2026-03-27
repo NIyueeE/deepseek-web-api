@@ -4,7 +4,6 @@ These tests use real credentials and make actual API calls.
 Run with: pytest tests/smoke/ -v -s
 """
 
-import pytest
 
 # Don't import at module level to avoid triggering init
 # Tests will import what they need
@@ -32,7 +31,7 @@ class TestCoreSmoke:
 
         assert "authorization" in headers
         assert headers["authorization"].startswith("Bearer ")
-        print(f"\n[PASS] Auth headers obtained")
+        print("\n[PASS] Auth headers obtained")
 
     def test_pow_response(self):
         """Test PoW response generation."""
@@ -43,7 +42,7 @@ class TestCoreSmoke:
 
         assert pow_resp is not None
         assert len(pow_resp) > 0
-        print(f"\n[PASS] PoW response generated")
+        print("\n[PASS] PoW response generated")
 
     def test_full_flow(self):
         """Test complete flow: login -> pow -> session -> message."""
@@ -54,12 +53,12 @@ class TestCoreSmoke:
         # 1. Get token
         token = get_token()
         assert token
-        print(f"\n[PASS] Got token")
+        print("\n[PASS] Got token")
 
         # 2. Get PoW
         pow_resp = get_pow_response()
         assert pow_resp
-        print(f"[PASS] Got PoW")
+        print("[PASS] Got PoW")
 
         # 3. Create session
         headers = get_auth_headers()

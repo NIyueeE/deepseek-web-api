@@ -1,6 +1,5 @@
 """Server-side security warnings for local deployment."""
 
-import logging
 
 from .config import (
     get_auth_tokens,
