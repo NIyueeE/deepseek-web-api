@@ -43,7 +43,8 @@ impersonate = "safari15_3"
 | `DEEPSEEK_CREATE_POW_URL` | PoW 挑战 API 地址 |
 | `BASE_HEADERS` | 从配置读取的 HTTP 请求头 |
 | `DEFAULT_IMPERSONATE` | 浏览器伪装标识 |
-| `WASM_PATH` | WASM 模块文件路径 |
+| `get_wasm_url()` | 读取 `[wasm].url`，无则用默认 URL |
+| `get_wasm_path()` | 读取 `[wasm].path`，无则用默认路径 |
 | `get_auth_tokens()` | 读取 `auth.tokens` 字符串数组（非空则需要鉴权） |
 | `get_pool_size()` | 读取 session pool 最大并发数（默认 10） |
 | `get_pool_acquire_timeout()` | 读取等待 session 的超时秒数（默认 30.0） |
@@ -142,8 +143,9 @@ DeepSeek API 要求每次请求携带 PoW 挑战答案。流程：
 
 | 方法 | 说明 |
 |------|------|
+| `_ensure_wasm()` | 首次调用时从 URL 下载 WASM 文件到本地路径 |
 | `_get_cached_wasm(wasm_path)` | 获取/缓存 WASM 模块（线程安全） |
-| `compute_pow_answer(algorithm, challenge_str, salt, difficulty, expire_at, wasm_path)` | 纯 WASM 计算 PoW 答案 |
+| `compute_pow_answer(algorithm, challenge_str, salt, difficulty, expire_at, wasm_path?)` | 纯 WASM 计算 PoW 答案 |
 | `get_pow_response(target_path)` | 获取完整 PoW 响应（API + 计算），支持 token 自动刷新 |
 
 ---

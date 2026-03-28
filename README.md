@@ -60,7 +60,10 @@ token = ""                         # Optional, system will auto-manage (saved af
 
 **Docker / Env var overrides**:
 - `CONFIG_PATH`: Config file path (env: `CONFIG_PATH`, default `config.toml`)
-- `WASM_PATH`: WASM module path (env: `WASM_PATH`, default `core/sha3_wasm_bg.7b9ca65ddd.wasm`)
+
+**WASM module**: Configured via `[wasm]` section in `config.toml`:
+- `url`: Download URL (auto-downloaded on first run if not present)
+- `path`: Local save path (default `core/deepseek.wasm`)
 
 **Security**:
 - `[auth].tokens` is a simple string array. Non-empty array means auth is required; empty array means anonymous access (only safe for loopback).

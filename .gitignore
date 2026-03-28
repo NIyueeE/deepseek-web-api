@@ -8,6 +8,7 @@ __pycache__
 build
 dist
 config.toml
+**/*.wasm
 
 # 博斗残迹
 .claude
