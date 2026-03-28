@@ -170,7 +170,15 @@ def convert_messages_to_prompt(
                 if not params.get('additionalProperties', True):
                     param_desc += "\n  Note: Additional parameters are not allowed."
 
-            tools_lines.append(f"- {name}: {desc}{param_desc}")
+            schema_json = ""
+            if params:
+                schema_json = "\n```json\n" + json.dumps(params, ensure_ascii=False) + "\n```\n"
+
+            strict_notice = ""
+            if func.get('strict', False):
+                strict_notice = "\n**Strict Mode**: Function calls MUST exactly match the specified schema. Do NOT add fields not defined, do not omit required fields, do not use values outside enum list."
+
+            tools_lines.append(f"- {name}: {desc}{schema_json}{param_desc}{strict_notice}")
 
         tools_prompt = "## Available Tools\n" + "\n".join(tools_lines)
         tools_prompt += """
@@ -194,8 +202,25 @@ You can explain your reasoning before using tools. When you need to call tools, 
     if system_parts:
         prompt_parts.insert(0, "[System Instruction]\n" + "\n---\n".join(system_parts) + "\n---")
 
-    # Add separator and REMINDER before Assistant output if tools are available
-    if effective_tools:
-        prompt_parts.append("\n---\nAbove is our conversation history.\n\n[REMINDER] When you need to call tools, you MUST use the [TOOL🛠️]...[/TOOL🛠️] tags. For multiple tool calls, wrap them in a JSON array: [TOOL🛠️][{\"name\": \"func1\", \"arguments\": {...}}, {\"name\": \"func2\", \"arguments\": {...}}][/TOOL🛠️].")
+    # Add separator and REMINDER before Assistant output
+    if effective_tools is not None:
+        reminder_parts = ["When you need to call tools, you MUST use the [TOOL🛠️]...[/TOOL🛠️] tags."]
+
+        if tool_choice == "required":
+            reminder_parts.append("**You MUST call at least one tool before responding.**")
+
+        if not parallel_tool_calls and not (tool_choice_info["degraded"] and tool_choice_info["reason"] == "tool_not_found"):
+            reminder_parts.append("**Call only ONE tool at a time.**")
+
+        reminder_text = " ".join(reminder_parts)
+        prompt_parts.append(f"\n---\nAbove is our conversation history.\n\n[REMINDER] {reminder_text}")
+
+    elif effective_tools is None and tool_choice_info["degraded"]:
+        reason = tool_choice_info["reason"]
+        if reason == "no_tools_available":
+            prompt_parts.append("\n---\nAbove is our conversation history.\n\n[REMINDER] The requested tool operation requires available tools, but none were provided. Inform the user that no tools are available.")
+        elif reason == "tool_not_found":
+            missing = tool_choice_info.get("missing_name", "the requested tool")
+            prompt_parts.append(f"\n---\nAbove is our conversation history.\n\n[REMINDER] The requested tool \"{missing}\" is not available. Inform the user that this tool is not available.")
 
     return "\n\n".join(prompt_parts)
