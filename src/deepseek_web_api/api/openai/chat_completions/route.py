@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -34,11 +34,17 @@ class ChatCompletionRequest(BaseModel):
                 "thinking_enabled": False,
             }
         )
+
+    Proxy-layer parameters (not forwarded to DeepSeek):
+        - tool_choice: Controls which tools the model may call (default "auto")
+        - parallel_tool_calls: Whether to allow parallel tool calls (default True)
     """
     model: str = "deepseek-web-chat"
     messages: List[dict]
     stream: bool = False
     tools: Optional[List[dict]] = None
+    tool_choice: Optional[Union[str, dict]] = "auto"
+    parallel_tool_calls: Optional[bool] = True
     extra_body: Optional[dict] = None
 
 
@@ -71,7 +77,12 @@ async def chat_completions(request: Request):
 
     validated = ChatCompletionRequest(**data)
     logger.debug(f"Request payload: {json.dumps(data, ensure_ascii=False, indent=2)}")
-    prompt = convert_messages_to_prompt(validated.messages, validated.tools)
+    prompt = convert_messages_to_prompt(
+        validated.messages,
+        validated.tools,
+        validated.tool_choice,
+        validated.parallel_tool_calls,
+    )
     logger.debug(f"Constructed prompt:\n{prompt}")
 
     # Extract DeepSeek-specific parameters from extra_body

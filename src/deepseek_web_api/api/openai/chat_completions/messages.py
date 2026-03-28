@@ -1,9 +1,59 @@
 """Message conversion utilities for OpenAI-style messages to DeepSeek prompt."""
 
 import json
+import logging
 from typing import List, Optional, Union
 
 from .tools import TOOL_START_MARKER, TOOL_END_MARKER
+
+logger = logging.getLogger(__name__)
+
+
+def _preprocess_tools(tools: Optional[List[dict]], tool_choice: Union[str, dict]) -> tuple[Optional[List[dict]], dict]:
+    """Preprocess tools based on tool_choice.
+
+    Returns: (effective_tools, tool_choice_info)
+    - effective_tools: filtered list, or None if tools should not be exposed
+    - tool_choice_info: dict with keys:
+        - degraded: bool
+        - reason: str (None, "no_tools_available", "tool_not_found", "invalid_value")
+        - missing_name: str (only if reason == "tool_not_found")
+    """
+    info: dict = {"degraded": False, "reason": None, "missing_name": None}
+
+    # Handle "none" - tools explicitly disabled
+    if tool_choice == "none":
+        return None, info
+
+    # Handle "auto" or "required" - use all tools as-is
+    if tool_choice == "auto":
+        return tools, info
+
+    if tool_choice == "required":
+        if not tools:
+            info["degraded"] = True
+            info["reason"] = "no_tools_available"
+        return tools if tools else None, info
+
+    # Handle specific tool selection via dict
+    if isinstance(tool_choice, dict):
+        func_spec = tool_choice.get("function")
+        if func_spec and isinstance(func_spec, dict):
+            name = func_spec.get("name")
+            if name and tools:
+                for t in tools:
+                    if t.get("function", {}).get("name") == name:
+                        return [t], info
+                # Tool not found
+                info["degraded"] = True
+                info["reason"] = "tool_not_found"
+                info["missing_name"] = name
+                return None, info
+
+    # Invalid tool_choice value - degrade but preserve original tools
+    info["degraded"] = True
+    info["reason"] = "invalid_value"
+    return tools, info
 
 
 def extract_text_content(content: Union[str, List, None]) -> str:
@@ -27,18 +77,35 @@ def extract_text_content(content: Union[str, List, None]) -> str:
     return ""
 
 
-def convert_messages_to_prompt(messages: List[dict], tools: Optional[List[dict]] = None) -> str:
+def convert_messages_to_prompt(
+    messages: List[dict],
+    tools: Optional[List[dict]] = None,
+    tool_choice: Union[str, dict] = "auto",
+    parallel_tool_calls: bool = True,
+) -> str:
     """Convert OpenAI-style messages array to DeepSeek prompt format.
 
     Args:
         messages: List of OpenAI-style messages with role and content
         tools: Optional OpenAI tools specification
+        tool_choice: Controls which tools the model may call (default "auto")
+        parallel_tool_calls: Whether to allow parallel tool calls (default True)
 
     Returns:
         Formatted prompt string for DeepSeek API
     """
     prompt_parts = []
     system_parts = []
+
+    # Preprocess tools based on tool_choice
+    effective_tools, tool_choice_info = _preprocess_tools(tools, tool_choice)
+
+    # Log degradation if any
+    if tool_choice_info["degraded"]:
+        logger.warning(
+            f"[messages] tool_choice degraded: reason={tool_choice_info['reason']}, "
+            f"missing_name={tool_choice_info.get('missing_name')}"
+        )
 
     for msg in messages:
         role = msg.get("role", "")
@@ -75,9 +142,9 @@ def convert_messages_to_prompt(messages: List[dict], tools: Optional[List[dict]]
             prompt_parts.append(f"\nTool: id={tool_id}\n```\n{text}\n```")
 
     # Inject tools into system instruction
-    if tools:
+    if effective_tools:
         tools_lines = []
-        for t in tools:
+        for t in effective_tools:
             func = t.get('function', {})
             name = func.get('name')
             desc = func.get('description') or ''
@@ -128,7 +195,7 @@ You can explain your reasoning before using tools. When you need to call tools, 
         prompt_parts.insert(0, "[System Instruction]\n" + "\n---\n".join(system_parts) + "\n---")
 
     # Add separator and REMINDER before Assistant output if tools are available
-    if tools:
+    if effective_tools:
         prompt_parts.append("\n---\nAbove is our conversation history.\n\n[REMINDER] When you need to call tools, you MUST use the [TOOL🛠️]...[/TOOL🛠️] tags. For multiple tool calls, wrap them in a JSON array: [TOOL🛠️][{\"name\": \"func1\", \"arguments\": {...}}, {\"name\": \"func2\", \"arguments\": {...}}][/TOOL🛠️].")
 
     return "\n\n".join(prompt_parts)
