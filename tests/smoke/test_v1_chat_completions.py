@@ -24,10 +24,22 @@ class TestV1ChatCompletionsSmoke:
     """Smoke tests for v1/chat/completions with OpenAI SDK."""
 
     def setup_method(self):
-        """Reset singletons before each test."""
+        """Reset singletons and check server reachability before each test."""
+        import pytest
+
         from deepseek_web_api.core.parent_msg_store import ParentMsgStore
         from deepseek_web_api.api.openai.chat_completions import session_pool as sp_module
 
+        # Fast-fail if server not reachable
+        client = self._create_client()
+        try:
+            client.models.list()
+        except Exception as e:
+            pytest.skip(
+                f"Server not reachable at {os.getenv('SMOKE_OPENAI_BASE_URL', 'http://localhost:5001/v1')}: {e}"
+            )
+
+        # Reset singletons
         ParentMsgStore._instance = None
         ParentMsgStore._lock = None
         sp_module._pool = None
@@ -239,3 +251,173 @@ class TestV1ChatCompletionsSmoke:
 
         print(f"[tool_calls] Found: {tool_calls}")
         assert len(tool_calls) > 0, "Should have received tool calls"
+
+    def test_tool_choice_none_forbids_tools(self):
+        """tool_choice='none' disables tools — model responds without calling any tool."""
+        client = self._create_client()
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string", "description": "City name"}},
+                        "required": ["city"]
+                    }
+                }
+            }
+        ]
+
+        resp = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "What is the weather in Beijing?"}],
+            stream=False,
+            tools=tools,
+            tool_choice="none",
+        )
+
+        content = resp.choices[0].message.content
+        finish = resp.choices[0].finish_reason
+        print(f"[tool_choice=none] finish_reason={finish}, content={repr(content[:80])}")
+
+        assert finish == "stop", f"Expected finish_reason='stop', got {finish}"
+        assert content, "Model should respond with text when tools are disabled"
+        assert resp.choices[0].message.tool_calls is None, "tool_calls should be None when tool_choice='none'"
+
+    def test_tool_choice_required_enforces_tool(self):
+        """tool_choice='required' forces model to call at least one tool."""
+        client = self._create_client()
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string", "description": "City name"}},
+                        "required": ["city"]
+                    }
+                }
+            }
+        ]
+
+        resp = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Please check the weather in Tokyo using the get_weather tool."}],
+            stream=False,
+            tools=tools,
+            tool_choice="required",
+        )
+
+        finish = resp.choices[0].finish_reason
+        tool_calls = resp.choices[0].message.tool_calls
+        content = resp.choices[0].message.content
+        print(f"[tool_choice=required] finish_reason={finish}, tool_calls={tool_calls}, content={repr(content[:80] if content else None)}")
+
+        assert finish == "tool_calls", f"Expected finish_reason='tool_calls', got {finish}"
+        assert tool_calls and len(tool_calls) > 0, f"Expected at least 1 tool_call, got {tool_calls}"
+        assert tool_calls[0].function.name == "get_weather", f"Expected 'get_weather', got {tool_calls[0].function.name}"
+
+    def test_parallel_tool_calls_false_single_call(self):
+        """parallel_tool_calls=False instructs model to call one tool at a time."""
+        client = self._create_client()
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string", "description": "City name"}},
+                        "required": ["city"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time",
+                    "description": "Get current time for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string", "description": "City name"}},
+                        "required": ["city"]
+                    }
+                }
+            }
+        ]
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "What is the weather and time in Shanghai?"}],
+            stream=True,
+            tools=tools,
+            parallel_tool_calls=False,
+        )
+
+        tool_calls = []
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.tool_calls:
+                for tc in chunk.choices[0].delta.tool_calls:
+                    if tc.function and tc.function.name:
+                        tool_calls.append(tc.function.name)
+                        print(f"[parallel=false] tool: {tc.function.name}")
+
+        print(f"[parallel=false] Total tool calls: {len(tool_calls)}")
+        assert len(tool_calls) > 0, "Model should call tools when parallel_tool_calls=False"
+
+    def test_strict_mode_schema_adherence(self):
+        """strict=true tool with enum — model should respect enum constraints."""
+        client = self._create_client()
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_status",
+                    "description": "Set system status",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "inactive", "pending"],
+                                "description": "Status value"
+                            }
+                        },
+                        "required": ["status"]
+                    },
+                    "strict": True
+                }
+            }
+        ]
+
+        resp = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Set the system status to 'active' using the set_status tool."}],
+            stream=False,
+            tools=tools,
+        )
+
+        finish = resp.choices[0].finish_reason
+        tool_calls = resp.choices[0].message.tool_calls
+        content = resp.choices[0].message.content
+        print(f"[strict=true] finish_reason={finish}, tool_calls={tool_calls}, content={repr(content[:80] if content else None)}")
+
+        assert finish == "tool_calls", f"Expected finish_reason='tool_calls', got {finish}"
+        assert tool_calls and len(tool_calls) > 0, f"Expected tool_call, got {tool_calls}"
+
+        status_arg = tool_calls[0].function.arguments
+        if isinstance(status_arg, str):
+            import json
+            status_arg = json.loads(status_arg)
+        status_value = status_arg.get("status")
+        print(f"[strict=true] status argument: {status_value}")
+        assert status_value in ["active", "inactive", "pending"], f"Model used invalid enum value: {status_value}"

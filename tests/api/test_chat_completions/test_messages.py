@@ -180,3 +180,292 @@ class TestConvertMessagesToPrompt:
         result = convert_messages_to_prompt(messages, tools=tools)
         assert "[REMINDER]" in result
         assert "[TOOL🛠️]" in result
+
+
+class TestToolChoiceAndStrict:
+    """Tests for tool_choice, parallel_tool_calls, strict mode, and JSON Schema features."""
+
+    def test_tool_choice_auto_injects_tools(self):
+        """tool_choice='auto' with tools → tools appear, normal reminder."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(messages, tools=tools, tool_choice="auto")
+        assert "get_weather" in result
+        assert "[TOOL🛠️]" in result
+        assert "[REMINDER]" in result
+
+    def test_tool_choice_none_reminder_forbids_tools(self):
+        """tool_choice='none' → tools DO NOT appear, NO REMINDER about tools."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(messages, tools=tools, tool_choice="none")
+        assert "get_weather" not in result
+        assert "## Available Tools" not in result
+        assert "[REMINDER]" not in result
+
+    def test_tool_choice_required_reminder_enforces_tool(self):
+        """tool_choice='required' + tools exist → MUST call at least one tool reminder."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(messages, tools=tools, tool_choice="required")
+        assert "get_weather" in result
+        assert "[REMINDER]" in result
+        assert "MUST call at least one tool" in result
+
+    def test_tool_choice_required_no_tools_degrades(self):
+        """tool_choice='required' + empty tools list → degraded reminder, tools absent."""
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(messages, tools=[], tool_choice="required")
+        assert "## Available Tools" not in result
+        assert "[REMINDER]" in result
+        assert "no tools are available" in result
+
+    def test_tool_choice_specific_name_filters_tools(self):
+        """tool_choice with specific name that exists → only that tool appears."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time",
+                    "description": "Get time",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(
+            messages,
+            tools=tools,
+            tool_choice={"type": "function", "function": {"name": "get_weather"}}
+        )
+        assert "get_weather" in result
+        assert "get_time" not in result
+
+    def test_tool_choice_specific_name_not_found_degrades(self):
+        """tool_choice with nonexistent name + tools exist → degraded reminder."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(
+            messages,
+            tools=tools,
+            tool_choice={"type": "function", "function": {"name": "nonexistent"}}
+        )
+        assert "## Available Tools" not in result
+        assert "[REMINDER]" in result
+        assert "nonexistent" in result
+        assert "not available" in result
+
+    def test_parallel_tool_calls_false_reminder_at_most_one(self):
+        """parallel_tool_calls=False → 'ONE tool' (word boundary) appears in reminder."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(messages, tools=tools, parallel_tool_calls=False)
+        # Use word-boundary-aware check: "ONE tool" not "nonexistent" substring
+        assert "ONE tool" in result or "Call only ONE" in result
+        assert "[REMINDER]" in result
+
+    def test_parallel_tool_calls_false_with_degraded_skips_constraint(self):
+        """parallel_tool_calls=False + degraded (tool_choice=nonexistent) → NO 'ONE tool' constraint."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(
+            messages,
+            tools=tools,
+            tool_choice={"type": "function", "function": {"name": "nonexistent"}},
+            parallel_tool_calls=False
+        )
+        # Should have degraded reminder but NOT the ONE tool constraint
+        assert "[REMINDER]" in result
+        assert "not available" in result
+        # The key: "ONE tool" should NOT appear when degraded
+        assert "ONE tool" not in result
+        assert "Call only ONE" not in result
+
+    def test_strict_true_injects_mode_notice(self):
+        """Tool with strict=True → 'Strict Mode' paragraph appears."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}},
+                    "strict": True
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(messages, tools=tools)
+        assert "Strict Mode" in result
+
+    def test_strict_false_no_mode_notice(self):
+        """Tool with strict=False or omitted → no 'Strict Mode' paragraph."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}},
+                    "strict": False
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(messages, tools=tools)
+        assert "Strict Mode" not in result
+
+    def test_mixed_strict_tools(self):
+        """One tool strict:true, one strict:false → 'Strict Mode' appears exactly once."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}},
+                    "strict": True
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time",
+                    "description": "Get time",
+                    "parameters": {"type": "object", "properties": {}},
+                    "strict": False
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Weather?"}]
+        result = convert_messages_to_prompt(messages, tools=tools)
+        assert result.count("Strict Mode") == 1
+
+    def test_complex_nested_schema_with_strict(self):
+        """Deeply nested schema + strict:true → JSON Schema code block contains nested structure."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_data",
+                    "description": "Get nested data",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "config": {
+                                "type": "object",
+                                "properties": {
+                                    "settings": {
+                                        "type": "object",
+                                        "properties": {
+                                            "timeout": {"type": "integer"}
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "required": ["config"]
+                    },
+                    "strict": True
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Get data?"}]
+        result = convert_messages_to_prompt(messages, tools=tools)
+        assert "Strict Mode" in result
+        assert "```json" in result
+        assert "config" in result
+        assert "settings" in result
+        assert "timeout" in result
+
+    def test_json_schema_block_and_natural_language_both_present(self):
+        """Tool with enum parameter → both JSON code block AND natural language appear."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_status",
+                    "description": "Set status to one of the allowed values",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "inactive", "pending"],
+                                "description": "The status value"
+                            }
+                        },
+                        "required": ["status"]
+                    }
+                }
+            }
+        ]
+        messages = [{"role": "user", "content": "Set status?"}]
+        result = convert_messages_to_prompt(messages, tools=tools)
+        assert "```json" in result
+        assert "enum" in result
+        assert "active" in result
+        assert "status" in result
+        assert "allowed values" in result or "The status value" in result

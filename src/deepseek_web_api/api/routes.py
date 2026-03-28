@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..core.config import (
     get_cors_allow_credentials,
@@ -11,9 +11,9 @@ from ..core.config import (
     get_cors_origin_regex,
     get_cors_origins,
 )
-from ..core.logger import logger
 from ..core.local_api_auth import requires_local_api_auth, verify_local_api_auth
-from fastapi.responses import StreamingResponse
+from ..core.logger import logger
+from ..core.server_security import log_startup_security_warnings
 
 from .v0_service import (
     stream_chat_completion,
@@ -43,6 +43,12 @@ def get_cors_middleware_options() -> dict:
 app = FastAPI()
 
 app.add_middleware(CORSMiddleware, **get_cors_middleware_options())
+
+
+@app.on_event("startup")
+async def startup_security_warnings():
+    """Log security warnings once when the server worker starts."""
+    log_startup_security_warnings()
 
 
 @app.middleware("http")

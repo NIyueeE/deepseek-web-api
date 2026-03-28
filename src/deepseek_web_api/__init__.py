@@ -3,11 +3,9 @@
 from .api.routes import app
 from .api.openai import models_router, chat_completions_router
 from .core.logger import setup_logger
-from .core.server_security import log_startup_security_warnings
 
 # Setup centralized logger (level configured in config.toml or default WARNING)
 setup_logger()
-log_startup_security_warnings()
 
 # Include OpenAI compatible routers
 app.include_router(models_router)

@@ -118,7 +118,11 @@ OpenAI-compatible chat completions endpoint with full tool calling support and s
 | `messages` | array | OpenAI-style message array |
 | `stream` | bool | Streaming response, default `false` |
 | `tools` | array | Tool definitions for function calling |
+| `tool_choice` | string \| object | Controls which tools the model may call. Values: `"auto"` (default), `"none"` (disable tools), `"required"` (must call at least one tool), or `{"type": "function", "function": {"name": "..."}}` (call a specific tool). This parameter is proxy-layer only and not forwarded to DeepSeek. |
+| `parallel_tool_calls` | bool | Whether to allow parallel tool calls. Default `true`. When `false`, the model is instructed to call only one tool at a time. This parameter is proxy-layer only and not forwarded to DeepSeek. |
 | `extra_body` | dict | DeepSeek-specific parameters (see below) |
+
+> **Note on `tools`**: Each tool supports a `strict` property inside `function` (e.g., `{"type": "function", "function": {"name": "...", "strict": true}}`). When `strict: true`, the model is instructed to strictly follow the JSON Schema — do not add undefined fields, do not omit required fields, do not use values outside enum lists. Both natural language description and JSON Schema block are included in the prompt for maximum constraint fidelity.
 
 **DeepSeek-specific parameters via `extra_body`**:
 
