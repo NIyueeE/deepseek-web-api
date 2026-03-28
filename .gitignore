@@ -1,4 +1,3 @@
-uv.lock
 .venv
 .pytest_cache
 .ruff_cache
