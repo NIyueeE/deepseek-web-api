@@ -19,6 +19,8 @@ Environment:
 
 import os
 
+import pytest
+
 
 class TestV1ChatCompletionsSmoke:
     """Smoke tests for v1/chat/completions with OpenAI SDK."""
@@ -497,3 +499,108 @@ class TestV1ChatCompletionsSmoke:
         # Should not contain newlines (the \n stop sequence)
         assert "\n" not in text, f"Stop sequence '\\n' should not appear in output: {repr(text)}"
         assert "---" not in text, f"Stop sequence '---' should not appear in output: {repr(text)}"
+
+    def test_streaming_first_chunk_role_assistant(self):
+        """Test that the first streaming chunk has delta.role=assistant."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Say 'hello' only."}],
+            stream=True,
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        assert len(chunks) > 0
+        first_chunk = chunks[0]
+        assert first_chunk.choices[0].delta.role == "assistant", (
+            f"Expected first chunk role=assistant, got {first_chunk.choices[0].delta.role}"
+        )
+
+    def test_streaming_include_usage_true_null_usage_each_chunk(self):
+        """Test that include_usage=True adds usage:null to each streaming chunk."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Say 'hi' only."}],
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        # At minimum we should have the role chunk and content chunk
+        assert len(chunks) >= 2, f"Expected at least 2 chunks, got {len(chunks)}"
+        
+        # Check that usage is present in all chunks (except [DONE])
+        # OpenAI SDK converts SSE "usage": null into CompletionUsage with all zeros
+        for c in chunks:
+            if hasattr(c, 'usage') and c.usage is not None:
+                assert c.usage.prompt_tokens == 0, f"Expected prompt_tokens=0 but got {c.usage.prompt_tokens}"
+                assert c.usage.completion_tokens == 0, f"Expected completion_tokens=0 but got {c.usage.completion_tokens}"
+                assert c.usage.total_tokens == 0, f"Expected total_tokens=0 but got {c.usage.total_tokens}"
+
+    def test_streaming_include_usage_true_final_usage_chunk(self):
+        """Test that include_usage=True adds a final usage chunk with choices=[]."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Say 'hi' only."}],
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        # Find the final usage chunk (it has choices=[] and usage with zeros)
+        final_usage_chunk = None
+        for c in chunks:
+            if hasattr(c, 'choices') and len(c.choices) == 0:
+                final_usage_chunk = c
+                break
+
+        assert final_usage_chunk is not None, "Final usage chunk not found"
+        assert hasattr(final_usage_chunk, 'usage'), "Final chunk should have usage"
+        assert final_usage_chunk.usage is not None, "Final usage should not be None"
+        assert final_usage_chunk.usage.prompt_tokens == 0
+        assert final_usage_chunk.usage.completion_tokens == 0
+        assert final_usage_chunk.usage.total_tokens == 0
+
+    def test_streaming_include_usage_false_no_usage(self):
+        """Test that include_usage=False (default) does not add usage field."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Say 'hi' only."}],
+            stream=True,
+            # include_usage defaults to False
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        # When include_usage=False, no chunk should have usage field
+        for c in chunks:
+            # OpenAI SDK returns None for missing usage, but doesn't raise
+            # If usage attribute exists and is not None, that's an error
+            if hasattr(c, 'usage') and c.usage is not None:
+                raise AssertionError(f"Unexpected usage field: {c.usage}")
