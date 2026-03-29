@@ -421,3 +421,79 @@ class TestV1ChatCompletionsSmoke:
         status_value = status_arg.get("status")
         print(f"[strict=true] status argument: {status_value}")
         assert status_value in ["active", "inactive", "pending"], f"Model used invalid enum value: {status_value}"
+
+    def test_response_format_json_object(self):
+        """response_format={'type':'json_object'} should produce valid JSON."""
+        client = self._create_client()
+
+        resp = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Return a JSON object with fields 'name' (string) and 'age' (number) for a person named Alice who is 30 years old."}],
+            stream=False,
+            response_format={"type": "json_object"},
+        )
+
+        content = resp.choices[0].message.content
+        print(f"[response_format=json_object] Response: {repr(content[:200])}")
+        assert content, "Should have content"
+        import json
+        try:
+            data = json.loads(content)
+            assert "name" in data, "JSON should have 'name' field"
+            assert "age" in data, "JSON should have 'age' field"
+        except json.JSONDecodeError as e:
+            pytest.fail(f"Response was not valid JSON: {e}\nContent: {repr(content)}")
+
+    def test_stop_sequence_truncation(self):
+        """stop='---' should truncate output at the sequence (sequence itself not output)."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Count from 1 to 5, separating each number with '---'. Example: 1---2---3"}],
+            stream=True,
+            stop="---",
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        text = "".join(
+            chunk.choices[0].delta.content or ""
+            for chunk in chunks
+            if chunk.choices and chunk.choices[0].delta.content
+        )
+        print(f"[stop=---] Full output: {repr(text)}")
+        assert "---" not in text, f"Stop sequence '---' should not appear in output: {repr(text)}"
+        # Verify it stopped at a reasonable point (not at the very beginning)
+        assert len(text) > 0, "Should have some output before stop"
+
+    def test_stop_sequence_multi(self):
+        """stop=['\\n', '---'] should truncate at the first matching sequence."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Write the numbers one through five on separate lines. Example:\none\ntwo\nthree"}],
+            stream=True,
+            stop=["\n", "---"],
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        text = "".join(
+            chunk.choices[0].delta.content or ""
+            for chunk in chunks
+            if chunk.choices and chunk.choices[0].delta.content
+        )
+        print(f"[stop=['\\n','---']] Full output: {repr(text)}")
+        # Should not contain newlines (the \n stop sequence)
+        assert "\n" not in text, f"Stop sequence '\\n' should not appear in output: {repr(text)}"
+        assert "---" not in text, f"Stop sequence '---' should not appear in output: {repr(text)}"

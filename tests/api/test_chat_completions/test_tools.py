@@ -13,6 +13,7 @@ from deepseek_web_api.api.openai.chat_completions.tools import (
     _try_parse_json,
     convert_tool_json_to_openai,
     extract_json_tool_calls,
+    get_stream_window,
 )
 
 
@@ -228,3 +229,31 @@ class TestConvertToolJsonToOpenai:
         result = convert_tool_json_to_openai(json_str, tools)
         assert result is not None
         assert len(result) == 1
+
+
+class TestGetStreamWindow:
+    """Tests for get_stream_window function."""
+
+    def test_get_stream_window_empty_returns_default(self):
+        """With no stop sequences, returns default window (len(TOOL_END_MARKER) * 2)."""
+        result = get_stream_window([])
+        assert result == len(TOOL_END_MARKER) * 2
+
+    def test_get_stream_window_with_stop_sequences(self):
+        """With stop sequences, returns max of default and longest stop * 2."""
+        result = get_stream_window(["---", "## References"])
+        assert result >= len("## References") * 2
+        assert result >= len(TOOL_END_MARKER) * 2
+
+    def test_get_stream_window_single_long_sequence(self):
+        """With a single long stop sequence, returns its length * 2."""
+        long_seq = "###END###"
+        result = get_stream_window([long_seq])
+        assert result == len(long_seq) * 2
+
+    def test_get_stream_window_default_larger(self):
+        """When TOOL_END_MARKER is longer than stop sequences, returns default."""
+        # TOOL_END_MARKER is "[/TOOL🛠️]" which is 12 chars
+        # Any stop sequence shorter than 6 chars should result in default
+        result = get_stream_window(["ab"])
+        assert result == len(TOOL_END_MARKER) * 2

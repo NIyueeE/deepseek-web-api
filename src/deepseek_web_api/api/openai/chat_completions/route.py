@@ -46,6 +46,8 @@ class ChatCompletionRequest(BaseModel):
     tool_choice: Optional[Union[str, dict]] = "auto"
     parallel_tool_calls: Optional[bool] = True
     extra_body: Optional[dict] = None
+    response_format: Optional[dict] = None
+    stop: Optional[Union[str, List[str]]] = None
 
 
 def _stream_error_chunks(message: str):
@@ -82,6 +84,7 @@ async def chat_completions(request: Request):
         validated.tools,
         validated.tool_choice,
         validated.parallel_tool_calls,
+        validated.response_format,
     )
     logger.debug(f"Constructed prompt:\n{prompt}")
 
@@ -125,9 +128,10 @@ async def chat_completions(request: Request):
                 error_session = False  # If True, session will be marked for re-init
 
                 try:
+                    stop_seqs = [validated.stop] if isinstance(validated.stop, str) else validated.stop
                     async for chunk in stream_generator(
                         prompt, validated.model, search_enabled, thinking_enabled,
-                        validated.tools, session
+                        validated.tools, session, stop_seqs
                     ):
                         if not started_yielding:
                             buffered.append(chunk)
@@ -216,9 +220,10 @@ async def chat_completions(request: Request):
         error_session = False
 
         try:
+            stop_seqs = [validated.stop] if isinstance(validated.stop, str) else validated.stop
             async for chunk in stream_generator(
                 prompt, validated.model, search_enabled, thinking_enabled,
-                validated.tools, session
+                validated.tools, session, stop_seqs
             ):
                 chunks.append(chunk)
             break  # Success

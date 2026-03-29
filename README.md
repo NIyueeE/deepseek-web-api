@@ -124,6 +124,8 @@ OpenAI-compatible chat completions endpoint with full tool calling support and s
 | `tool_choice` | string \| object | Controls which tools the model may call. Values: `"auto"` (default), `"none"` (disable tools), `"required"` (must call at least one tool), or `{"type": "function", "function": {"name": "..."}}` (call a specific tool). This parameter is proxy-layer only and not forwarded to DeepSeek. |
 | `parallel_tool_calls` | bool | Whether to allow parallel tool calls. Default `true`. When `false`, the model is instructed to call only one tool at a time. This parameter is proxy-layer only and not forwarded to DeepSeek. |
 | `extra_body` | dict | DeepSeek-specific parameters (see below) |
+| `response_format` | dict | Controls output format. `{"type":"json_object"}` instructs the model to respond only with valid JSON. `{"type":"json_schema","json_schema":{...}}` provides a JSON Schema to constrain output. This parameter is proxy-layer only and not forwarded to DeepSeek. |
+| `stop` | string \| array | Sequences where the model should stop generating. When a stop sequence is detected in the stream, output is truncated before the sequence itself. Supports single string or array of strings. This parameter is proxy-layer only and not forwarded to DeepSeek. |
 
 > **Note on `tools`**: Each tool supports a `strict` property inside `function` (e.g., `{"type": "function", "function": {"name": "...", "strict": true}}`). When `strict: true`, the model is instructed to strictly follow the JSON Schema — do not add undefined fields, do not omit required fields, do not use values outside enum lists. Both natural language description and JSON Schema block are included in the prompt for maximum constraint fidelity.
 
@@ -148,6 +150,16 @@ response = client.chat.completions.create(
     }
 )
 ```
+
+### Streaming Truncation (stop parameter)
+
+The `stop` parameter is consumed at the proxy layer and implemented via streaming truncation. When a stop sequence is detected, the proxy immediately stops yielding new content to the client while still consuming the DeepSeek SSE stream to ensure proper connection closure.
+
+Core mechanism:
+- Uses a `stream_buff` sliding window to buffer output
+- Buffer size is dynamically calculated: `max(len("[TOOL🛠️]"), max(stop sequence length)) * 2`
+- Stop detection is placed before every yield point, ensuring stop sequences themselves are never output
+- Reuses the `force_end` mechanism from tool call parsing
 
 ### Endpoint Details
 

@@ -38,7 +38,7 @@ class TestChatCompletionsRoute:
         async def fake_get_pool():
             return fake_pool
 
-        async def fake_stream_generator(prompt, model_name, search_enabled, thinking_enabled, tools, session):
+        async def fake_stream_generator(prompt, model_name, search_enabled, thinking_enabled, tools, session, stop_sequences=None):
             captured["search_enabled"] = search_enabled
             yield (
                 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
@@ -73,7 +73,7 @@ class TestChatCompletionsRoute:
         async def fake_get_pool():
             return fake_pool
 
-        async def empty_stream_generator(prompt, model_name, search_enabled, thinking_enabled, tools, session):
+        async def empty_stream_generator(prompt, model_name, search_enabled, thinking_enabled, tools, session, stop_sequences=None):
             if False:
                 yield None
 
@@ -137,3 +137,78 @@ class TestChatCompletionsRoute:
         error_payload = json.loads(parts[0][6:])
         assert error_payload["error"]["message"].startswith("Failed to create DeepSeek session")
         assert parts[-1] == "data: [DONE]"
+
+
+class TestStopFieldNormalization:
+    """Tests for stop field normalization in ChatCompletionRequest."""
+
+    def test_stop_single_string_accepted(self):
+        """stop as single string should be accepted by model."""
+        from deepseek_web_api.api.openai.chat_completions.route import ChatCompletionRequest
+
+        req = ChatCompletionRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            stop="---"
+        )
+        assert req.stop == "---"
+
+    def test_stop_list_pass_through_unchanged(self):
+        """stop as list should pass through unchanged."""
+        from deepseek_web_api.api.openai.chat_completions.route import ChatCompletionRequest
+
+        req = ChatCompletionRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            stop=["\n", "---"]
+        )
+        assert req.stop == ["\n", "---"]
+
+    def test_stop_none(self):
+        """stop as None should remain None."""
+        from deepseek_web_api.api.openai.chat_completions.route import ChatCompletionRequest
+
+        req = ChatCompletionRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            stop=None
+        )
+        assert req.stop is None
+
+
+class TestResponseFormatField:
+    """Tests for response_format field in ChatCompletionRequest."""
+
+    def test_response_format_field_accepted(self):
+        """response_format field should be accepted in request."""
+        from deepseek_web_api.api.openai.chat_completions.route import ChatCompletionRequest
+
+        req = ChatCompletionRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            response_format={"type": "json_object"}
+        )
+        assert req.response_format == {"type": "json_object"}
+
+    def test_response_format_json_schema(self):
+        """response_format with json_schema type should be accepted."""
+        from deepseek_web_api.api.openai.chat_completions.route import ChatCompletionRequest
+
+        schema = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "User",
+                "schema": {"type": "object", "properties": {"name": {"type": "string"}}}
+            }
+        }
+        req = ChatCompletionRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            response_format=schema
+        )
+        assert req.response_format == schema
+
+    def test_response_format_none(self):
+        """response_format as None should remain None."""
+        from deepseek_web_api.api.openai.chat_completions.route import ChatCompletionRequest
+
+        req = ChatCompletionRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            response_format=None
+        )
+        assert req.response_format is None
