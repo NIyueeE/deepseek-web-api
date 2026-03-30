@@ -130,3 +130,169 @@ class TestStreamGenerator:
         assert finish_reasons == ["tool_calls"]
         assert len(tool_calls) == 1
         assert tool_calls[0]["function"]["name"] == "get_weather"
+
+    @pytest.mark.asyncio
+    async def test_first_chunk_has_role_assistant(self, monkeypatch):
+        async def fake_stream_chat_completion(**kwargs):
+            yield b'data: {"p":"response/content","v":"Hello"}\n\n'
+            yield b'data: {"p":"response/status","v":"FINISHED"}\n\n'
+
+        monkeypatch.setattr(
+            "deepseek_web_api.api.openai.chat_completions.service.stream_chat_completion",
+            fake_stream_chat_completion,
+        )
+
+        session = StatelessSession(chat_session_id="session-role", is_initialized=False)
+        chunks = [
+            chunk
+            async for chunk in stream_generator(
+                "hello",
+                "deepseek-web-chat",
+                search_enabled=False,
+                thinking_enabled=True,
+                tools=None,
+                session=session,
+            )
+        ]
+
+        first_chunk = _parse_sse_chunk(chunks[0])
+        assert first_chunk["choices"][0]["delta"]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_first_chunk_has_usage_null_when_include_usage_true(self, monkeypatch):
+        async def fake_stream_chat_completion(**kwargs):
+            yield b'data: {"p":"response/content","v":"Hi"}\n\n'
+            yield b'data: {"p":"response/status","v":"FINISHED"}\n\n'
+
+        monkeypatch.setattr(
+            "deepseek_web_api.api.openai.chat_completions.service.stream_chat_completion",
+            fake_stream_chat_completion,
+        )
+
+        session = StatelessSession(chat_session_id="session-usage", is_initialized=False)
+        chunks = [
+            chunk
+            async for chunk in stream_generator(
+                "hi",
+                "deepseek-web-chat",
+                search_enabled=False,
+                thinking_enabled=True,
+                tools=None,
+                session=session,
+                include_usage=True,
+            )
+        ]
+
+        first_chunk = _parse_sse_chunk(chunks[0])
+        assert first_chunk.get("usage") is None
+        assert first_chunk["choices"][0]["delta"]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_include_usage_true_appends_null_usage_each_chunk(self, monkeypatch):
+        async def fake_stream_chat_completion(**kwargs):
+            yield b'data: {"p":"response/content","v":"Hi"}\n\n'
+            yield b'data: {"p":"response/status","v":"FINISHED"}\n\n'
+
+        monkeypatch.setattr(
+            "deepseek_web_api.api.openai.chat_completions.service.stream_chat_completion",
+            fake_stream_chat_completion,
+        )
+
+        session = StatelessSession(chat_session_id="session-usage2", is_initialized=False)
+        chunks = [
+            chunk
+            async for chunk in stream_generator(
+                "hi",
+                "deepseek-web-chat",
+                search_enabled=False,
+                thinking_enabled=True,
+                tools=None,
+                session=session,
+                include_usage=True,
+            )
+        ]
+
+        content_chunks = []
+        for chunk in chunks:
+            if chunk == "data: [DONE]\n\n":
+                continue
+            parsed = _parse_sse_chunk(chunk)
+            if parsed is None or parsed.get("choices") != []:
+                content_chunks.append(chunk)
+
+        for chunk in content_chunks:
+            parsed = _parse_sse_chunk(chunk)
+            assert parsed.get("usage") is None, f"Expected usage=null but got {parsed.get('usage')}"
+
+    @pytest.mark.asyncio
+    async def test_include_usage_true_appends_final_usage_chunk(self, monkeypatch):
+        async def fake_stream_chat_completion(**kwargs):
+            yield b'data: {"p":"response/content","v":"Hi"}\n\n'
+            yield b'data: {"p":"response/status","v":"FINISHED"}\n\n'
+
+        monkeypatch.setattr(
+            "deepseek_web_api.api.openai.chat_completions.service.stream_chat_completion",
+            fake_stream_chat_completion,
+        )
+
+        session = StatelessSession(chat_session_id="session-final", is_initialized=False)
+        chunks = [
+            chunk
+            async for chunk in stream_generator(
+                "hi",
+                "deepseek-web-chat",
+                search_enabled=False,
+                thinking_enabled=True,
+                tools=None,
+                session=session,
+                include_usage=True,
+            )
+        ]
+
+        usage_chunks = [
+            _parse_sse_chunk(chunk) for chunk in chunks
+            if chunk != "data: [DONE]\n\n"
+        ]
+
+        final_usage_chunk = None
+        for parsed in usage_chunks:
+            if parsed is not None and parsed.get("choices") == [] and "usage" in parsed:
+                final_usage_chunk = parsed
+                break
+
+        assert final_usage_chunk is not None, "Final usage chunk not found"
+        assert final_usage_chunk["usage"]["prompt_tokens"] == 0
+        assert final_usage_chunk["usage"]["completion_tokens"] == 0
+        assert final_usage_chunk["usage"]["total_tokens"] == 0
+
+    @pytest.mark.asyncio
+    async def test_include_usage_false_no_usage_field(self, monkeypatch):
+        async def fake_stream_chat_completion(**kwargs):
+            yield b'data: {"p":"response/content","v":"Hi"}\n\n'
+            yield b'data: {"p":"response/status","v":"FINISHED"}\n\n'
+
+        monkeypatch.setattr(
+            "deepseek_web_api.api.openai.chat_completions.service.stream_chat_completion",
+            fake_stream_chat_completion,
+        )
+
+        session = StatelessSession(chat_session_id="session-no-usage", is_initialized=False)
+        chunks = [
+            chunk
+            async for chunk in stream_generator(
+                "hi",
+                "deepseek-web-chat",
+                search_enabled=False,
+                thinking_enabled=True,
+                tools=None,
+                session=session,
+                include_usage=False,
+            )
+        ]
+
+        for chunk in chunks:
+            if chunk == "data: [DONE]\n\n":
+                continue
+            parsed = _parse_sse_chunk(chunk)
+            if parsed is not None:
+                assert "usage" not in parsed, f"Unexpected usage field: {parsed}"

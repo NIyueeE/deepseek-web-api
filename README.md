@@ -39,12 +39,17 @@ uv run python main.py
 host = "127.0.0.1"                  # Recommended: keep loopback-only
 port = 5001
 reload = true
-cors_origins = ["*"]                 # Recommended: replace with explicit origins for browser clients
-cors_allow_credentials = false
-cors_allow_methods = ["*"]
-cors_allow_headers = ["*"]
-pool_size = 10                       # Max concurrent DeepSeek sessions; requests wait when at capacity, 503 on timeout
-pool_acquire_timeout = 30.0           # Seconds to wait for a free session before returning 503
+
+[cors]
+origins = ["*"]                     # Recommended: replace with explicit origins for browser clients
+allow_credentials = false
+allow_methods = ["*"]
+allow_headers = ["*"]
+
+[session_pool]
+pool_size = 10                      # Max concurrent DeepSeek sessions; requests wait when at capacity, 503 on timeout
+pool_acquire_timeout = 30.0         # Seconds to wait for a free session before returning 503
+max_idle_seconds = 300.0           # Idle session cleanup threshold (configurable)
 
 [auth]
 tokens = []                          # Configure one or more tokens to enable auth
@@ -69,7 +74,7 @@ token = ""                         # Optional, system will auto-manage (saved af
 - `[auth].tokens` is a simple string array. Non-empty array means auth is required; empty array means anonymous access (only safe for loopback).
 - If at least one token is configured, all `/v0/*` and `/v1/*` endpoints require either `Authorization: Bearer <token>` or `X-API-Key: <token>`.
 - **Fail-fast protection**: If `[server].host` is non-loopback (e.g., `0.0.0.0`) and `[auth].tokens` is empty, the server will refuse to start.
-- CORS is configurable via `[server].cors_*`. The default remains permissive for compatibility, but you should narrow `cors_origins` before exposing browser clients.
+- CORS is configurable via `[cors].*`. The default remains permissive for compatibility, but you should narrow `cors_origins` before exposing browser clients.
 - You should still run the service on `127.0.0.1` unless you intentionally expose it.
 
 ## Models
@@ -124,6 +129,9 @@ OpenAI-compatible chat completions endpoint with full tool calling support and s
 | `tool_choice` | string \| object | Controls which tools the model may call. Values: `"auto"` (default), `"none"` (disable tools), `"required"` (must call at least one tool), or `{"type": "function", "function": {"name": "..."}}` (call a specific tool). This parameter is proxy-layer only and not forwarded to DeepSeek. |
 | `parallel_tool_calls` | bool | Whether to allow parallel tool calls. Default `true`. When `false`, the model is instructed to call only one tool at a time. This parameter is proxy-layer only and not forwarded to DeepSeek. |
 | `extra_body` | dict | DeepSeek-specific parameters (see below) |
+| `response_format` | dict | Controls output format. `{"type":"json_object"}` instructs the model to respond only with valid JSON. `{"type":"json_schema","json_schema":{...}}` provides a JSON Schema to constrain output. This parameter is proxy-layer only and not forwarded to DeepSeek. |
+| `stop` | string \| array | Sequences where the model should stop generating. When a stop sequence is detected in the stream, output is truncated before the sequence itself. Supports single string or array of strings. This parameter is proxy-layer only and not forwarded to DeepSeek. |
+| `stream_options` | dict | Stream options, supports `include_usage` (boolean) to include token usage statistics in streaming responses. |
 
 > **Note on `tools`**: Each tool supports a `strict` property inside `function` (e.g., `{"type": "function", "function": {"name": "...", "strict": true}}`). When `strict: true`, the model is instructed to strictly follow the JSON Schema — do not add undefined fields, do not omit required fields, do not use values outside enum lists. Both natural language description and JSON Schema block are included in the prompt for maximum constraint fidelity.
 
@@ -147,6 +155,50 @@ response = client.chat.completions.create(
         "thinking_enabled": True,    # Enable thinking output (for chat model)
     }
 )
+```
+
+### Streaming Truncation (stop parameter)
+
+The `stop` parameter is consumed at the proxy layer and implemented via streaming truncation. When a stop sequence is detected, the proxy immediately stops yielding new content to the client while still consuming the DeepSeek SSE stream to ensure proper connection closure.
+
+Core mechanism:
+- Uses a `stream_buff` sliding window to buffer output
+- Buffer size is dynamically calculated: `max(len("[TOOL🛠️]"), max(stop sequence length)) * 2`
+- Stop detection is placed before every yield point, ensuring stop sequences themselves are never output
+- Reuses the `force_end` mechanism from tool call parsing
+
+### Stream Options (stream_options parameter)
+
+When streaming with `stream: true`, you can optionally provide `stream_options` to control streaming behavior:
+
+```python
+client.chat.completions.create(
+    model="deepseek-web-chat",
+    messages=[{"role": "user", "content": "Hello"}],
+    stream=True,
+    stream_options={"include_usage": True}
+)
+```
+
+**Parameters:**
+| Option | Type | Description |
+|--------|------|-------------|
+| `include_usage` | boolean | When `true`, each streaming chunk includes a `usage: null` field. Additionally, a final chunk with `choices: []` and token usage statistics is sent before `data: [DONE]`. Defaults to `false`. |
+
+> **Note**: Token usage statistics (`prompt_tokens`, `completion_tokens`, `total_tokens`) are always zero because DeepSeek's streaming SSE does not provide token counts.
+
+### Streaming Response Format
+
+When `include_usage: true`, streaming responses include additional `usage` fields:
+
+**Regular chunks** (each chunk):
+```json
+{"choices":[{"index":0,"delta":{"content":"Hello"}}],"usage":null,"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":...,"model":"..."}
+```
+
+**Final usage chunk** (before `data: [DONE]`):
+```json
+{"choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":...,"model":"..."}
 ```
 
 ### Endpoint Details
@@ -210,7 +262,7 @@ Implements stateless sessions via `edit_message` API:
 **Session Pool**:
 - Maintains a bounded pool of DeepSeek sessions (`pool_size`, default 10)
 - When all sessions are busy, new requests wait up to `pool_acquire_timeout` seconds (default 30s) before returning HTTP 503
-- Idle sessions are cleaned up automatically every `max_idle_seconds/2` (default 150s)
+- Idle sessions are cleaned up automatically every `max_idle_seconds/2` (default 150s, configurable via `max_idle_seconds` in `[session_pool]`)
 - Hard cap prevents flooding DeepSeek with unbounded concurrent session creations
 
 **Rate Limit Handling**:

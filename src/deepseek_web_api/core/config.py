@@ -42,6 +42,14 @@ def _get_server_config() -> dict:
     return CONFIG.get("server", {})
 
 
+def _get_session_pool_config() -> dict:
+    return CONFIG.get("session_pool", {})
+
+
+def _get_cors_config() -> dict:
+    return CONFIG.get("cors", {})
+
+
 def _parse_bool(value, default: bool) -> bool:
     if value is None:
         return default
@@ -101,12 +109,17 @@ def get_auth_tokens() -> list[str]:
 
 def get_pool_size() -> int:
     """Max concurrent DeepSeek sessions in the stateless session pool."""
-    return int(_get_server_config().get("pool_size", 10))
+    return int(_get_session_pool_config().get("pool_size", 10))
 
 
 def get_pool_acquire_timeout() -> float:
     """Seconds to wait for an available session before returning 503."""
-    return float(_get_server_config().get("pool_acquire_timeout", 30.0))
+    return float(_get_session_pool_config().get("pool_acquire_timeout", 30.0))
+
+
+def get_max_idle_seconds() -> float:
+    """Seconds before an idle session is eligible for cleanup."""
+    return float(_get_session_pool_config().get("max_idle_seconds", 300.0))
 
 
 def get_server_host() -> str:
@@ -123,34 +136,34 @@ def get_server_reload() -> bool:
 
 def get_cors_origins() -> list[str]:
     return _parse_csv_or_list(
-        _get_server_config().get("cors_origins", ["*"]),
+        _get_cors_config().get("origins", ["*"]),
         ["*"],
     )
 
 
 def get_cors_origin_regex() -> str | None:
-    value = _get_server_config().get("cors_origin_regex", "")
+    value = _get_cors_config().get("origin_regex", "")
     value = str(value).strip()
     return value or None
 
 
 def get_cors_allow_credentials() -> bool:
     return _parse_bool(
-        _get_server_config().get("cors_allow_credentials"),
+        _get_cors_config().get("allow_credentials"),
         False,
     )
 
 
 def get_cors_allow_methods() -> list[str]:
     return _parse_csv_or_list(
-        _get_server_config().get("cors_allow_methods", ["*"]),
+        _get_cors_config().get("allow_methods", ["*"]),
         ["*"],
     )
 
 
 def get_cors_allow_headers() -> list[str]:
     return _parse_csv_or_list(
-        _get_server_config().get("cors_allow_headers", ["*"]),
+        _get_cors_config().get("allow_headers", ["*"]),
         ["*"],
     )
 

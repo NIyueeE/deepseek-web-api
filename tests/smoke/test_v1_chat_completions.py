@@ -19,6 +19,8 @@ Environment:
 
 import os
 
+import pytest
+
 
 class TestV1ChatCompletionsSmoke:
     """Smoke tests for v1/chat/completions with OpenAI SDK."""
@@ -421,3 +423,184 @@ class TestV1ChatCompletionsSmoke:
         status_value = status_arg.get("status")
         print(f"[strict=true] status argument: {status_value}")
         assert status_value in ["active", "inactive", "pending"], f"Model used invalid enum value: {status_value}"
+
+    def test_response_format_json_object(self):
+        """response_format={'type':'json_object'} should produce valid JSON."""
+        client = self._create_client()
+
+        resp = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Return a JSON object with fields 'name' (string) and 'age' (number) for a person named Alice who is 30 years old."}],
+            stream=False,
+            response_format={"type": "json_object"},
+        )
+
+        content = resp.choices[0].message.content
+        print(f"[response_format=json_object] Response: {repr(content[:200])}")
+        assert content, "Should have content"
+        import json
+        try:
+            data = json.loads(content)
+            assert "name" in data, "JSON should have 'name' field"
+            assert "age" in data, "JSON should have 'age' field"
+        except json.JSONDecodeError as e:
+            pytest.fail(f"Response was not valid JSON: {e}\nContent: {repr(content)}")
+
+    def test_stop_sequence_truncation(self):
+        """stop='---' should truncate output at the sequence (sequence itself not output)."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Count from 1 to 5, separating each number with '---'. Example: 1---2---3"}],
+            stream=True,
+            stop="---",
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        text = "".join(
+            chunk.choices[0].delta.content or ""
+            for chunk in chunks
+            if chunk.choices and chunk.choices[0].delta.content
+        )
+        print(f"[stop=---] Full output: {repr(text)}")
+        assert "---" not in text, f"Stop sequence '---' should not appear in output: {repr(text)}"
+        # Verify it stopped at a reasonable point (not at the very beginning)
+        assert len(text) > 0, "Should have some output before stop"
+
+    def test_stop_sequence_multi(self):
+        """stop=['\\n', '---'] should truncate at the first matching sequence."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Write the numbers one through five on separate lines. Example:\none\ntwo\nthree"}],
+            stream=True,
+            stop=["\n", "---"],
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        text = "".join(
+            chunk.choices[0].delta.content or ""
+            for chunk in chunks
+            if chunk.choices and chunk.choices[0].delta.content
+        )
+        print(f"[stop=['\\n','---']] Full output: {repr(text)}")
+        # Should not contain newlines (the \n stop sequence)
+        assert "\n" not in text, f"Stop sequence '\\n' should not appear in output: {repr(text)}"
+        assert "---" not in text, f"Stop sequence '---' should not appear in output: {repr(text)}"
+
+    def test_streaming_first_chunk_role_assistant(self):
+        """Test that the first streaming chunk has delta.role=assistant."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Say 'hello' only."}],
+            stream=True,
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        assert len(chunks) > 0
+        first_chunk = chunks[0]
+        assert first_chunk.choices[0].delta.role == "assistant", (
+            f"Expected first chunk role=assistant, got {first_chunk.choices[0].delta.role}"
+        )
+
+    def test_streaming_include_usage_true_null_usage_each_chunk(self):
+        """Test that include_usage=True adds usage:null to each streaming chunk."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Say 'hi' only."}],
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        # At minimum we should have the role chunk and content chunk
+        assert len(chunks) >= 2, f"Expected at least 2 chunks, got {len(chunks)}"
+        
+        # Check that usage is present in all chunks (except [DONE])
+        # OpenAI SDK converts SSE "usage": null into CompletionUsage with all zeros
+        for c in chunks:
+            if hasattr(c, 'usage') and c.usage is not None:
+                assert c.usage.prompt_tokens == 0, f"Expected prompt_tokens=0 but got {c.usage.prompt_tokens}"
+                assert c.usage.completion_tokens == 0, f"Expected completion_tokens=0 but got {c.usage.completion_tokens}"
+                assert c.usage.total_tokens == 0, f"Expected total_tokens=0 but got {c.usage.total_tokens}"
+
+    def test_streaming_include_usage_true_final_usage_chunk(self):
+        """Test that include_usage=True adds a final usage chunk with choices=[]."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Say 'hi' only."}],
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        # Find the final usage chunk (it has choices=[] and usage with zeros)
+        final_usage_chunk = None
+        for c in chunks:
+            if hasattr(c, 'choices') and len(c.choices) == 0:
+                final_usage_chunk = c
+                break
+
+        assert final_usage_chunk is not None, "Final usage chunk not found"
+        assert hasattr(final_usage_chunk, 'usage'), "Final chunk should have usage"
+        assert final_usage_chunk.usage is not None, "Final usage should not be None"
+        assert final_usage_chunk.usage.prompt_tokens == 0
+        assert final_usage_chunk.usage.completion_tokens == 0
+        assert final_usage_chunk.usage.total_tokens == 0
+
+    def test_streaming_include_usage_false_no_usage(self):
+        """Test that include_usage=False (default) does not add usage field."""
+        client = self._create_client()
+
+        stream = client.chat.completions.create(
+            model="deepseek-web-chat",
+            messages=[{"role": "user", "content": "Say 'hi' only."}],
+            stream=True,
+            # include_usage defaults to False
+        )
+
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            if len(chunks) > 100:
+                break
+
+        # When include_usage=False, no chunk should have usage field
+        for c in chunks:
+            # OpenAI SDK returns None for missing usage, but doesn't raise
+            # If usage attribute exists and is not None, that's an error
+            if hasattr(c, 'usage') and c.usage is not None:
+                raise AssertionError(f"Unexpected usage field: {c.usage}")

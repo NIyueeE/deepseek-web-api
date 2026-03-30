@@ -82,6 +82,7 @@ def convert_messages_to_prompt(
     tools: Optional[List[dict]] = None,
     tool_choice: Union[str, dict] = "auto",
     parallel_tool_calls: bool = True,
+    response_format: Optional[dict] = None,
 ) -> str:
     """Convert OpenAI-style messages array to DeepSeek prompt format.
 
@@ -197,6 +198,27 @@ You can explain your reasoning before using tools. When you need to call tools, 
 2. If you need to call multiple tools, put them all in a single [TOOL🛠️]...[/TOOL🛠️] array.
 """
         system_parts.append(tools_prompt)
+
+    # Inject response_format constraint into system prompt
+    if response_format:
+        fmt_type = response_format.get("type")
+        if fmt_type == "json_object":
+            system_parts.append(
+                "## Response Format\n"
+                "You MUST respond ONLY with a valid JSON object. "
+                "Do not include any text before or after the JSON."
+            )
+        elif fmt_type == "json_schema":
+            schema = response_format.get("json_schema", {})
+            schema_name = schema.get("name", "unknown")
+            schema_schema = schema.get("schema", {})
+            schema_json = json.dumps(schema_schema, ensure_ascii=False)
+            system_parts.append(
+                f"## Response Format\n"
+                f"You MUST respond ONLY with a valid JSON object conforming to the schema below.\n"
+                f"Schema name: {schema_name}\n"
+                f"```json\n{schema_json}\n```"
+            )
 
     # Build system instruction block
     if system_parts:

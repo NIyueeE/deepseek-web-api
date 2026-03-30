@@ -469,3 +469,44 @@ class TestToolChoiceAndStrict:
         assert "active" in result
         assert "status" in result
         assert "allowed values" in result or "The status value" in result
+
+
+class TestResponseFormatInjection:
+    """Tests for response_format parameter in convert_messages_to_prompt."""
+
+    def test_response_format_json_object_injects_constraint(self):
+        """When response_format.type == 'json_object', system prompt includes JSON constraint."""
+        prompt = convert_messages_to_prompt(
+            messages=[{"role": "user", "content": "hello"}],
+            response_format={"type": "json_object"}
+        )
+        assert "JSON" in prompt
+        assert "valid JSON object" in prompt or "valid JSON" in prompt.lower()
+
+    def test_response_format_json_schema_injects_schema(self):
+        """When response_format.type == 'json_schema', system prompt includes schema."""
+        schema = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "User",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "age": {"type": "number"}
+                    }
+                }
+            }
+        }
+        prompt = convert_messages_to_prompt(
+            messages=[{"role": "user", "content": "hello"}],
+            response_format=schema
+        )
+        assert "JSON" in prompt
+        assert "User" in prompt
+
+    def test_response_format_none_backward_compatible(self):
+        """When response_format is None, prompt is unchanged."""
+        p1 = convert_messages_to_prompt([{"role": "user", "content": "hello"}])
+        p2 = convert_messages_to_prompt([{"role": "user", "content": "hello"}], response_format=None)
+        assert p1 == p2

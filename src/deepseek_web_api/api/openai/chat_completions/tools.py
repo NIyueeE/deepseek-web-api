@@ -12,7 +12,21 @@ TOOL_START_MARKER = "[TOOL🛠️]"
 TOOL_END_MARKER = "[/TOOL🛠️]"
 TOOL_JSON_PATTERN = re.compile(r'\[TOOL🛠️\](.*?)\[/TOOL🛠️\]', re.DOTALL)
 # Sliding window for tool buffer: end marker length + 3 chars lookahead
-TOOL_BUFFER_WINDOW = len(TOOL_END_MARKER) * 2
+STREAM_WINDOW = len(TOOL_END_MARKER) * 2
+
+# Backward compatibility alias
+TOOL_BUFFER_WINDOW = STREAM_WINDOW
+
+
+def get_stream_window(stop_sequences: list[str]) -> int:
+    """Compute dynamic buffer window based on stop sequences.
+    
+    Formula: max(len(TOOL_END_MARKER) * 2, max(len(s) for s in stop_sequences) * 2)
+            if stop_sequences else len(TOOL_END_MARKER) * 2
+    """
+    if not stop_sequences:
+        return len(TOOL_END_MARKER) * 2
+    return max(len(TOOL_END_MARKER) * 2, max(len(s) for s in stop_sequences) * 2)
 
 
 def _build_tool_call(tool_name: str, arguments: Union[str, dict]) -> dict:

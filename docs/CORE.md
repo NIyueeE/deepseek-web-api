@@ -46,15 +46,16 @@ impersonate = "safari15_3"
 | `get_wasm_url()` | 读取 `[wasm].url`，无则用默认 URL |
 | `get_wasm_path()` | 读取 `[wasm].path`，无则用默认路径 |
 | `get_auth_tokens()` | 读取 `auth.tokens` 字符串数组（非空则需要鉴权） |
-| `get_pool_size()` | 读取 session pool 最大并发数（默认 10） |
-| `get_pool_acquire_timeout()` | 读取等待 session 的超时秒数（默认 30.0） |
+| `get_pool_size()` | 读取 `[session_pool].pool_size`（默认 10） |
+| `get_pool_acquire_timeout()` | 读取 `[session_pool].pool_acquire_timeout`（默认 30.0） |
+| `get_max_idle_seconds()` | 读取 `[session_pool].max_idle_seconds`（默认 300.0） |
 | `get_server_host()` | 读取 `[server].host` |
 | `get_server_port()` | 读取 `[server].port` |
 | `get_server_reload()` | 读取 `[server].reload` |
-| `get_cors_origins()` | 读取 `[server].cors_origins` |
-| `get_cors_allow_credentials()` | 读取 `[server].cors_allow_credentials` |
-| `get_cors_allow_methods()` | 读取 `[server].cors_allow_methods` |
-| `get_cors_allow_headers()` | 读取 `[server].cors_allow_headers` |
+| `get_cors_origins()` | 读取 `[cors].origins` |
+| `get_cors_allow_credentials()` | 读取 `[cors].allow_credentials` |
+| `get_cors_allow_methods()` | 读取 `[cors].allow_methods` |
+| `get_cors_allow_headers()` | 读取 `[cors].allow_headers` |
 
 ---
 

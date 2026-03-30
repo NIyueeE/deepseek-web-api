@@ -32,17 +32,11 @@ class StatelessSession:
     chat_session_id: str
     is_initialized: bool = False
     last_access_time: float = field(default_factory=time.time)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    lock: asyncio.Lock = field(default_factory=lambda: asyncio.Lock())
 
 
 class SessionPoolError(Exception):
     """Base exception for session pool errors."""
-
-    pass
-
-
-class AllSessionsBusyError(SessionPoolError):
-    """Raised when all sessions in the pool are locked/busy."""
 
     pass
 
@@ -308,10 +302,11 @@ async def get_pool() -> StatelessSessionPool:
     if _pool is None:
         async with _pool_lock:
             if _pool is None:
-                from ....core.config import get_pool_size, get_pool_acquire_timeout
+                from ....core.config import get_pool_size, get_pool_acquire_timeout, get_max_idle_seconds
                 _pool = StatelessSessionPool(
                     pool_size=get_pool_size(),
                     acquire_timeout=get_pool_acquire_timeout(),
+                    max_idle_seconds=get_max_idle_seconds(),
                 )
                 _pool.start_cleanup()
     return _pool

@@ -1,5 +1,7 @@
 """DeepSeek Web API routes."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -40,15 +42,16 @@ def get_cors_middleware_options() -> dict:
     return options
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager: log security warnings on startup."""
+    log_startup_security_warnings()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(CORSMiddleware, **get_cors_middleware_options())
-
-
-@app.on_event("startup")
-async def startup_security_warnings():
-    """Log security warnings once when the server worker starts."""
-    log_startup_security_warnings()
 
 
 @app.middleware("http")
