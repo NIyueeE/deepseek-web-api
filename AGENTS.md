@@ -685,6 +685,44 @@ Follow `docs/code-style.md`:
 
 ---
 
+## Release Checklist（发布前必须逐项通过）
+
+> **教训（v0.5.1）**：第一次打 `v0.5.1` tag 时没有走完这份清单 —— 本地 release 构建、
+> 真实账号 E2E、最终提交冻结都没做，tag 打在了一个仍有并发缺陷的提交上，只能删 tag 重打。
+> 这正是要避免的 **fix-on-fix**：**清单跑完之前不要 `git tag`；tag 推送之后不要再改代码。**
+>
+> 每一项都要有可复核的证据（命令 + 输出/记录），不接受「应该没问题」。
+
+1. **冻结代码**：计划内的改动全部已提交，`git status --short` 为空。清单执行期间不改代码；
+   若验证发现缺陷 → 修完**从第 1 步重来**，绝不在打 tag 之后继续改。
+2. **本地门禁全绿**（在待发布的那个 commit 上）：
+   - `cargo fmt --all --check`
+   - `cargo clippy --workspace --all-targets -- -D warnings`
+   - `cargo test --workspace --all-targets`
+   - `scripts/check-lint-exemptions.sh`、`scripts/check-config-drift.sh`
+   - `cargo audit`、`cargo machete`、`cargo deny --all-features check licenses bans sources`
+     （本机未安装时以 CI 的 `check` / `security` 作业为准，并在发布记录里注明）
+   - `cd web && bun run typecheck && bun run lint && bun run check:locales && bun run check:config-parity && bun run build`
+3. **版本一致性**：`Cargo.toml` == `ds_core/Cargo.toml` == `web/package.json` == `CHANGELOG.md`
+   的条目版本 == 即将推送的 tag。
+4. **本地 release 构建 + 冒烟**：`cargo build --release --locked`，用**这个二进制**启动并验证
+   `/health`、`/admin/`（内嵌前端）、`/v1/models`、401 错误信封，以及本次新增/修改的端点与行为。
+5. **真实账号 E2E（凡是改动请求链路的版本必做）**：
+   - **一次只用一个账号**，把请求数压到最少（能合并的验证合并进同一次请求）；
+   - 至少覆盖 OpenAI 流式、Anthropic 流式、Responses API，以及本次改动直接影响的行为
+     （例：验证 `Idempotency-Key` 回放时必须证明**没有**产生第二次上游请求）；
+   - 记录账号、时间、结果；涉及风控相关改动时，写明观察窗口与尚未验证的边界。
+6. **清理与复核**：没有遗留的临时文件 / 本地 tag / draft release；
+   `git diff <上一个已发布 tag>..HEAD` 逐段过一遍，确认没有意外改动（新增依赖、`#[allow]`、调试代码）。
+7. **一次到位地打 tag**：`git push origin main` → `git tag -a vX.Y.Z` → `git push origin vX.Y.Z`。
+8. **CI 全绿**：Release 工作流的 `verify` / `test` / 8 个平台产物 / Docker 镜像全部成功。
+9. **发布产物冒烟**：下载 Release 的 Linux 产物，实际运行并复验 `/health`、`/v1/models`、
+   `GET /v1/responses/{id}` 等关键路径。
+10. **最后才发布**：draft release 只有在第 9 步通过后才 `gh release edit --draft=false`。
+    **已发布的 tag 不得移动** —— 需要修正就发下一个 patch 版本。
+
+---
+
 ## Commands
 
 ```bash
