@@ -6,93 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-10-07
+## [0.5.0] - 2026-10-07
 
-> **验证边界**：本版把传输层拟态改成与 UA 自洽的原生 App 档位（消除「安卓 App UA +
-> Chrome/macOS client hints + 地址栏导航头」这组矛盾），并在 4 类端点上实测可通过 WAF。
-> **但端到端「能否规避封号」仍未验证**：三个测试账号先后被临时停用
-> （旧版 +19min、v0.6.0 +37min 均被 `USER_IS_BANNED`；仅用官方浏览器的对照组 2 小时
-> 以上仍正常）。因此本版是「按证据继续收敛」，不是「已验证安全」。
-> 若新档位在你的环境触发 WAF，可设 `emulation = "chrome136"` 回退（老行为）。
-
-### Changed
-
-- **传输层拟态改为自洽的原生 App 档位（`emulation = "okhttp4_12"`，默认）**：
-  2026-10-07 用本地 echo server 取证发现，此前发出的请求是
-  「安卓 App UA + `sec-ch-ua`: Chrome 136 **macOS** + `sec-fetch-dest: document`
-  地址栏导航头 + `accept: text/html,…` 文档 accept + `accept-language: en-US`」
-  的自相矛盾组合 —— 任何真实客户端都不会长这样（真实安卓 App 是 OkHttp：
-  `accept: */*`、无 client hints、无 sec-fetch）。改为 OkHttp 档位后，
-  请求头与默认 UA / `client_platform = android` 完全自洽，且 `accept-language`
-  跟随 `client_locale`。
-  - 老行为可用 `emulation = "chrome136"` 切回（仅当 UA / `client_platform` /
-    `client_os` 都切成 web 时才自洽）
-  - WAF 实测（三种档位 × 四个端点，均无 202 challenge）：`/client/settings` 200、
-    `/users/login` 200（假凭据 → `biz_code=2`）、`/chat/create_pow_challenge` 与
-    `/chat_session/create` 200（无效 token → `40003 Authorization Failed`）
-  - 管理面板「设置」页可配，三语言同步
-
-### Fixed
-
-- **登录被终止性拒绝时不再反复重试**：账号处于 `Error` 时后台恢复任务每 60 秒重登一次，
-  而封禁（`biz_code=10`）/ 禁言（5）/ 设备校验失败（11）/ 凭据错误（2）这类错误重试
-  不会改变结果 —— 文档里也写明「禁言后继续重试不会加速解禁，反而可能延长」。
-  现在这类错误立即置 `Invalid` 并停止重试（新增 `is_terminal_login_error` 与单测）
-- **不再为基础设备身份预热 HIF 令牌**：账号流量一律使用「按账号派生」的设备身份，
-  此前启动时还会用一个从不参与业务请求的基础身份多取一份令牌（多一次无谓请求，
-  也让一个只出现在取令牌请求里的设备身份出现在上游）；改为在账号初始化时按该账号
-  设备身份预热
-
-## [0.6.0] - 2026-10-07
-
-> **验证边界（务必阅读）**：本版把设备身份改为**按账号**派生（X-Device-Id + HIF
-> 令牌都按设备分桶），并修掉了 wasmtime 的 critical 安全公告。**「能否规避封号」
-> 仍未被证明**：唯一实测账号（9 月已累计多次违规）在最小流量后 19 分钟被判
-> `USER_BANNED`，官方提示「由于违规次数过多，你的账户已被临时停用」，属阶梯升级
-> 处罚。对照实验（另一账号，只用官方浏览器）仍在观测中。完整时间线与下一步实验
-> 设计见 `docs/development.md`。
-
-### Security
-
-- **wasmtime 48.0.2 → 48.0.5**：RUSTSEC-2026-0315 / 0316 / 0325 / **0327（critical,
-  9.3）** 等新公告要求 >= 48.0.4（或 >= 49.0.2），CI 的 `cargo audit` 因此失败。
-  保持 48.x 分支上升级到 48.0.5（PoW 求解链路已本地验证：WASM 加载/实例化/导出探测
-  与升级前一致；合成 challenge 在 48.0.2 与 48.0.5 上表现相同，均为构造值不可解，
-  非升级引入）
+> **验证边界（务必阅读）**：本版把 2026-10-07 一整轮的防封号工作**合并为一个版本**
+> （此前 0.5.0 / 0.6.0 / 0.7.0 三个已发布版本已撤回折叠到本版）。包含：
+> 补齐真实客户端必带的 `x-hif-leim` 风控令牌、设备身份按账号派生、传输层拟态改为与 UA
+> 自洽的原生 App 档位、wasmtime critical 安全公告修复。
+>
+> **但「能否规避封号」尚未被证明**：三个测试账号先后被临时停用（旧版 +19min、
+> 含 hif 修复的版本 +37min 均 `USER_IS_BANNED`，提示「由于违规次数过多，你的账户已被
+> 临时停用」；仅用官方浏览器的对照组 2.5 小时以上仍正常）。也就是说本轮修的是
+> **已证实的缺口与自相矛盾**，不是「已验证安全」。完整时间线、对照实验与后续排查方向
+> 见 `docs/development.md`。
 
 ### Added
-
 - **`ds_core/examples/identity_probe.rs`**：客户端身份变体的 WAF 兼容性探测
   （只打无鉴权的 `/client/settings` 与用一次性假凭据打 `/users/login`，**不产生任何
   账号流量**）。顺带更正 2026-09-20 的过时结论：现在「安卓 App 身份」「全 Web Chrome
   身份」「OkHttp 身份」三种组合都能到达应用层，桌面 Chrome UA 不再被 202 拦截
-
-### Changed
-
-- **设备身份改为按账号派生（X-Device-Id + HIF 令牌都按设备分桶）**：
-  `client_device_id` 留空（默认）时，`X-Device-Id` 按该账号的数美 `device_id`
-  派生（`ds-free-api:x-device-id:{device_id}`）—— 每个账号一个**稳定且唯一**的设备
-  身份，与真实客户端「一个浏览器 profile = 一个数美 device_id + 一个 X-Device-Id」
-  一致；HIF 风控令牌也**按设备分别获取与刷新**。此前是实例级共用同一个
-  `X-Device-Id` 与同一份令牌，等于告诉上游「这些账号来自同一台设备」。
-  显式配置 `client_device_id` 仍可强制共用（不推荐）。同时移除 v0.5.0 引入的
-  「首启生成随机 UUID 并写回配置」逻辑（已被按账号派生取代）与
-  `ds_core::random_device_uuid`
-- 文档（`docs/development.md`）：补上「我们实际发出的请求头 vs 真实客户端」取证 ——
-  当前是「安卓 App UA + Chrome/macOS client hints + 文档导航头」的自相矛盾组合，
-  并给出两条自洽路线（全 Web 身份 / OkHttp 原生 App 身份）与验证前提
-
-## [0.5.0] - 2026-10-07
-
-> **验证边界（务必阅读）**：本版补齐了真实客户端必带、此前完全缺失的
-> `x-hif-leim` 风控令牌，并修掉了两个全局常量指纹。**但「能否规避封号」
-> 尚未被证明**：唯一的实测账号（9 月已累计多次违规）在最小流量后 19 分钟
-> 被官方判定 `USER_IS_BANNED`，提示语为「由于违规次数过多，你的账户已被
-> 临时停用」，属于阶梯升级处罚，无法归因于本次修复失败、也无法证明其有效。
-> 完整时间线与下一步实验设计见 `docs/development.md`。
-
-### Added
-
 - **HIF 风控令牌 `x-hif-leim`（2026-10-07 抓包发现，本轮防封号的核心修复）**：
   用真实浏览器对 `chat.deepseek.com` 做**完整对话流程**抓包后发现，真实客户端会
   轮询 `GET https://hif-leim.deepseek.com/query`（**无鉴权**，返回
@@ -132,7 +63,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   在日志中列出涉及账号并给出修复建议（不阻止启动）
 
 ### Changed
-
+- **传输层拟态改为自洽的原生 App 档位（`emulation = "okhttp4_12"`，默认）**：
+  2026-10-07 用本地 echo server 取证发现，此前发出的请求是
+  「安卓 App UA + `sec-ch-ua`: Chrome 136 **macOS** + `sec-fetch-dest: document`
+  地址栏导航头 + `accept: text/html,…` 文档 accept + `accept-language: en-US`」
+  的自相矛盾组合 —— 任何真实客户端都不会长这样（真实安卓 App 是 OkHttp：
+  `accept: */*`、无 client hints、无 sec-fetch）。改为 OkHttp 档位后，
+  请求头与默认 UA / `client_platform = android` 完全自洽，且 `accept-language`
+  跟随 `client_locale`。
+  - 老行为可用 `emulation = "chrome136"` 切回（仅当 UA / `client_platform` /
+    `client_os` 都切成 web 时才自洽）
+  - WAF 实测（三种档位 × 四个端点，均无 202 challenge）：`/client/settings` 200、
+    `/users/login` 200（假凭据 → `biz_code=2`）、`/chat/create_pow_challenge` 与
+    `/chat_session/create` 200（无效 token → `40003 Authorization Failed`）
+  - 管理面板「设置」页可配，三语言同步
+- **设备身份改为按账号派生（X-Device-Id + HIF 令牌都按设备分桶）**：
+  `client_device_id` 留空（默认）时，`X-Device-Id` 按该账号的数美 `device_id`
+  派生（`ds-free-api:x-device-id:{device_id}`）—— 每个账号一个**稳定且唯一**的设备
+  身份，与真实客户端「一个浏览器 profile = 一个数美 device_id + 一个 X-Device-Id」
+  一致；HIF 风控令牌也**按设备分别获取与刷新**。此前是实例级共用同一个
+  `X-Device-Id` 与同一份令牌，等于告诉上游「这些账号来自同一台设备」。
+  显式配置 `client_device_id` 仍可强制共用（不推荐）。同时移除 v0.5.0 引入的
+  「首启生成随机 UUID 并写回配置」逻辑（已被按账号派生取代）与
+  `ds_core::random_device_uuid`
+- 文档（`docs/development.md`）：补上「我们实际发出的请求头 vs 真实客户端」取证 ——
+  当前是「安卓 App UA + Chrome/macOS client hints + 文档导航头」的自相矛盾组合，
+  并给出两条自洽路线（全 Web 身份 / OkHttp 原生 App 身份）与验证前提
 - **设备 UUID 改为「每安装一个持久 UUID」**：`client_device_id` 留空时，
   首次启动会生成随机 UUID 并写回配置文件（此前是按 `api_base` 确定性派生，
   意味着**所有部署共用同一个 X-Device-Id**，上游可据此关联大量账号）。
@@ -151,7 +107,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `X-Client-Platform` 身份保持一致）
 
 ### Fixed
-
+- **登录被终止性拒绝时不再反复重试**：账号处于 `Error` 时后台恢复任务每 60 秒重登一次，
+  而封禁（`biz_code=10`）/ 禁言（5）/ 设备校验失败（11）/ 凭据错误（2）这类错误重试
+  不会改变结果 —— 文档里也写明「禁言后继续重试不会加速解禁，反而可能延长」。
+  现在这类错误立即置 `Invalid` 并停止重试（新增 `is_terminal_login_error` 与单测）
+- **不再为基础设备身份预热 HIF 令牌**：账号流量一律使用「按账号派生」的设备身份，
+  此前启动时还会用一个从不参与业务请求的基础身份多取一份令牌（多一次无谓请求，
+  也让一个只出现在取令牌请求里的设备身份出现在上游）；改为在账号初始化时按该账号
+  设备身份预热
 - **UTF-8 切片 panic（多语言输入）**：错误消息 / trace 日志按字节截断预览文本，
   中文 / emoji 输出下会切到 UTF-8 续字节而 panic。改为 `floor_char_boundary` /
   按字符截断：
@@ -166,71 +129,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   （后两者上游已下线，产生大量假失败），且账号数恒为 0、并发恒为 1。
   改为读取 `[ds_core]`，默认值与 `src/config.rs` 的 `default_*` 对齐
 
-### Docs
-
-- 统一 `device_id` 策略描述：`README.md` / `README.en.md` / `docs/development.md`
-  此前仍写「设备级、可在多账号间复用」，与本次更正后的「每账号独立」结论矛盾；
-  现均改为每账号独立，并注明伪造值会被 `RISK_DEVICE_DETECTED`（biz_code 11）拒绝
-
-### 为什么改这个，而不是改 prompt 注入格式
-
-仓库内 `stats.json` 提供了两次封禁的对照数据：
-
-| | 维护者压测（v0.2.9 期间） | 本次会话（v0.3.0） |
-|---|---|---|
-| 时间 | 04:21–07:30 UTC | 11:14–12:11 UTC |
-| 请求数 | **217** | **217** |
-| prompt 格式 | **旧格式（`<think>` 注入）** | **标准 ChatML** |
-| `device_id` | 同一个 | **同一个** |
-| 结果 | 跑完**之后**账号1 被禁 | 跑完**之后**账号2 被禁 |
-
-**格式变了，结果没变。** 且 v0.2.9 的 CHANGELOG 已记录过同样的结论
-（「提示词改动**可能**有帮助，但**封禁并未消除**」）。因此「再找一个更合适的注入格式」
-属于已经被证伪的方向；两次事件的共同点是**请求量**与**共用指纹**。
-
-### 实测补充：`device_id` 不能伪造
-
-同一未封禁账号的 A/B（三种 device_id）：
-
-| device_id | 结果 |
-|---|---|
-| 真实浏览器注册的指纹 | ✅ 通过设备校验 |
-| 伪造的 base64（88 字符） | ❌ `RISK_DEVICE_DETECTED` (11) |
-| 伪造的普通字符串 | ❌ `RISK_DEVICE_DETECTED` (11) |
-
-因此「每账号独立 device_id」需要**为每个账号各自注册一次设备**，
-不能靠生成随机值代替 —— 这是一项真实成本，已在配置示例中写明。
-
-> 排查方法提示：不要用**已封禁**账号验证此事。封禁检查可能先于设备校验，
-> 返回 `USER_IS_BANNED` 会让人误判为「伪造值也通过了」。
-
-### 2026-09-17 实测：配额内的单账号压测**仍被禁言**
-
-三个账号解禁后**逐号单独**验证（每号独立启动，跑一轮 basic + repair，约 27 次上游请求，
-远低于 60 次/小时配额）：
-
-| 账号 | 初始化 | 全量 e2e | 复查结果 |
-|---|---|---|---|
-| `l3366599051@163.com` | 04:08:53 ✅ | 04:09–04:12（basic 13/14 + repair 10/10） | **04:21 已禁言**，`mute_until` ≈ 09-26 04:18 |
-| `1460183479@qq.com` | 04:12:54 ✅ | 04:14–04:17（basic 13/14 + repair 10/10） | **04:21 已禁言**，`mute_until` ≈ 09-26 04:18 |
-| `n1yu3@proton.me` | 04:17:21 ✅ | 04:19–04:21（basic 14/14 + repair 10/10） | 04:29 复查正常 → **06:58 已禁言**，`mute_until` ≈ 09-26 04:34 |
-
-> 三次 basic 中仅有的失败均为上游 `code=7, rate limit reached` 的文件上传限流
-> （重试 3 次后仍失败），与 prompt 注入无关；default 模型的对话 / 工具 / 流式 / 推理场景全部通过。
-
-结论与局限：
-
-- **三个账号最终全部被禁言**：账号 1、2 在跑完数分钟内被禁言，账号 3 在 04:29 复查时仍正常、
-  但 06:58 复查已禁言（`mute_until` ≈ 09-26 04:34，判定时间比账号 1、2 晚约 15 分钟）；
-- 这再次证明**禁言是延迟判定的**：短时间内「仍然正常」不能作为安全证据；
-- 本次实验三个账号**共用同一个真实浏览器 `device_id`**（当前环境直连被 AWS WAF 拦截，
-  无法为每个账号各生成一个真实指纹），且跑的是同一份注入负载 —— 因此**无法区分**
-  「共用指纹」与「当前注入 / 请求行为」各自的贡献，两者都不能排除；
-- 下一步的正确实验：为每个账号各注册一个真实 `device_id`（消除指纹混杂）后重跑本表流程。
-  在这个混杂因素被消除之前，「配额 + 标准 ChatML 注入」都不能称为已验证的安全策略。
-
-> 实际使用建议：本代理**无法保证账号不被风控**；不要用长期账号压测，
-> 出现 `biz_code=5` 后立即停用等待解禁。
+### Security
+- **wasmtime 48.0.2 → 48.0.5**：RUSTSEC-2026-0315 / 0316 / 0325 / **0327（critical,
+  9.3）** 等新公告要求 >= 48.0.4（或 >= 49.0.2），CI 的 `cargo audit` 因此失败。
+  保持 48.x 分支上升级到 48.0.5（PoW 求解链路已本地验证：WASM 加载/实例化/导出探测
+  与升级前一致；合成 challenge 在 48.0.2 与 48.0.5 上表现相同，均为构造值不可解，
+  非升级引入）
 
 ## [0.4.0] - 2026-09-13
 
