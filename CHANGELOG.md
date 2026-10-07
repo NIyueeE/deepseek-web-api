@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ds_core/examples/identity_probe.rs`**：客户端身份变体的 WAF 兼容性探测
+  （只打无鉴权的 `/client/settings` 与用一次性假凭据打 `/users/login`，**不产生任何
+  账号流量**）。顺带更正 2026-09-20 的过时结论：现在「安卓 App 身份」「全 Web Chrome
+  身份」「OkHttp 身份」三种组合都能到达应用层，桌面 Chrome UA 不再被 202 拦截
+
+### Changed
+
+- 文档（`docs/development.md`）：补上「我们实际发出的请求头 vs 真实客户端」取证 ——
+  当前是「安卓 App UA + Chrome/macOS client hints + 文档导航头」的自相矛盾组合，
+  并给出两条自洽路线（全 Web 身份 / OkHttp 原生 App 身份）与验证前提
+
 ## [0.5.0] - 2026-10-07
 
 > **验证边界（务必阅读）**：本版补齐了真实客户端必带、此前完全缺失的

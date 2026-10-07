@@ -516,7 +516,61 @@ x-hif-leim: <来自 hif-leim.deepseek.com 的令牌>
 | **TLS 指纹与身份** | 目前是「安卓 App UA + Chrome136 TLS 指纹」。`wreq-util` 有 OkHttp 拟态档位，理论上更自洽；但桌面 Chrome UA 会被 AWS WAF 202 拦截，改动需实测 |
 | **`/client/settings*` 系列请求** | 真实客户端启动会拉 5 个 scope（`did` 用 `__ds_remote_feature_did`）并在设置变更时 `report`；本代理完全不发 |
 | **文件上传请求头** | 真实客户端上传时额外带 `x-thinking-enabled` / `x-model-type` / `x-file-size`；本代理未发（只影响超长 prompt / 附件路径） |
-| **通用请求头细节** | `wreq` 的 Chrome136 拟态会注入 `sec-ch-ua*` / `sec-fetch-*` / `accept` / `accept-language: en-US`，与「安卓 App UA」并不自洽；真实 Web 客户端发 `accept: */*`、`accept-language: zh-CN`。未改动是因为当前组合已能通过 WAF，换身份需要实测 |
+| **通用请求头细节（已实测取证，见下节）** | 当前发出的请求是「安卓 App UA + Chrome/macOS client hints + 文档导航头」的混合体，任何真实客户端都不会长这样。未直接改动是因为换身份有 WAF 风险且暂时没有干净账号做端到端验证 |
+
+### 2026-10-07 补充取证：我们实际发出的头 vs 真实客户端
+
+用本地 echo server（`HifConfig.leim_url` 指向 `http://127.0.0.1:PORT/query`）把
+`DsClient` 的真实请求头打印出来，结果如下 —— **这是自相矛盾的组合**：
+
+```
+user-agent: DeepSeek/2.5.0 Android/35                        ← 安卓 App
+sec-ch-ua: "Chromium";v="136", … "Google Chrome";v="136"     ← 却是 Chrome 浏览器
+sec-ch-ua-platform: "macOS"                                  ← 还自称 macOS
+sec-fetch-dest: document / mode: navigate / site: none       ← 却是地址栏导航
+accept: text/html,application/xhtml+xml,…                    ← 文档请求，不是 XHR
+accept-language: en-US,en;q=0.9                              ← 而 client_locale 是 zh_CN
+x-client-platform: android
+```
+
+真实 Web 客户端（同一轮抓包）是：
+
+```
+user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) … Chrome/140.0.0.0 Safari/537.36
+sec-ch-ua: "Chromium";v="153", "Not_A Brand";v="8"   ← 与真实浏览器版本一致
+sec-ch-ua-mobile: ?0 ; sec-ch-ua-platform: "Windows"
+accept: */*                    ← XHR
+accept-language: zh-CN
+referer: https://chat.deepseek.com/
+x-client-platform: web ; x-client-version: 2.5.0 ; x-device-id: <uuid> ; x-device-model: (空)
+```
+
+也就是说：**我们的 TLS 指纹是 Chrome、client hints 是 Chrome/macOS、UA 却是安卓 App**，
+只有「naive 的 HTTP 拟态库」会产出这种组合。
+
+**WAF 兼容性实测**（`cargo run -p ds_core --example identity_probe`，只打无鉴权的
+`/client/settings` 与用一次性假凭据打 `/users/login`，**不涉及任何真实账号**）：
+
+| 身份组合 | `/client/settings` | `/users/login`（假凭据） |
+|----------|--------------------|--------------------------|
+| 安卓 App UA + Chrome136 TLS（当前实现） | 200 ✅ | 200 `biz_code=2` ✅ |
+| 桌面 Chrome UA + Chrome136 TLS（全 Web 自洽） | 200 ✅ | 200 `biz_code=2` ✅ |
+| 安卓 App UA + OkHttp4.12 TLS（原生 App 自洽） | 200 ✅ | （未测） |
+
+> 注意：这与 2026-09-20 的结论「桌面 Chrome UA 会被 WAF 202 拦截」**不一致**，
+> 现在三种身份都能到达应用层。WAF 规则显然变化过，之前的结论已过时。
+
+**因此有两条自洽路线**（都还没做端到端验证，需要干净账号）：
+
+- **A. 全 Web 身份**：`user_agent` 改成与拟态档位一致的 Chrome UA（Chrome136），
+  `client_platform = "web"`、`client_os = "web"`，并把 `accept` / `accept-language`
+  / `referer` 覆盖成 XHR 形态（参考上面的真实客户端头表）；
+- **B. 原生 App 身份**：改用 `Emulation::OkHttp4_12`（默认头只有
+  `accept: */*` + `accept-language`），保留安卓 UA 与 `client_os = "android"`，
+  不再发 `sec-ch-ua*` / `sec-fetch-*`。
+
+选 A 还是 B，应当用**干净账号**跑一次「登录 → 建会话 → completion」端到端对照后再定，
+不要在无法验证的情况下凭手感切换（这正是 2026-09 那轮反复试错的教训）。
 
 ### 验证方法与当前状态
 

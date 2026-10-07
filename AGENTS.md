@@ -594,6 +594,7 @@ Follow `docs/code-style.md`:
 | Unified debug CLI | `examples/adapter_cli.rs` | Modes: chat/raw/compare/concurrent/status/models |
 | Risk-token probe | `examples/hif_probe.rs` | Checks the `hif-leim` endpoint only — **no account traffic** |
 | Account status check | `examples/account_check.rs` | Login-only `is_muted` / `mute_until` check (1 request per account) |
+| Identity/WAF probe | `ds_core/examples/identity_probe.rs` | Compares client-identity variants against the WAF using unauthenticated endpoints + throwaway credentials — **no account traffic** |
 | Example request JSON | `examples/adapter_cli/` | Pre-built ChatCompletionsRequest samples |
 | Scripted regression test | `just adapter-cli -- source examples/adapter_cli-script.txt` | Runs all JSON samples in sequence |
 | Docker deployment | `docker/Dockerfile` + `docker/docker-compose.yaml` | Pre-built ghcr.io image, bind mounts for config/data |
