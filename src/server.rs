@@ -472,6 +472,67 @@ description = "test"
         Arc::new(store::StoreManager::new(&dir, &config_path, config))
     }
 
+    /// 幂等错误的信封必须跟随请求所属协议：
+    /// `/v1/*` 用 OpenAI 信封，`/anthropic/*` 用 Anthropic 信封。
+    /// （2026-10-07 真实账号 E2E 发现：此前一律返回 Anthropic 信封。）
+    #[tokio::test]
+    async fn idempotency_errors_follow_route_flavor() {
+        let resp = error::ServerError::IdempotencyInProgress { anthropic: false }.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = body_json(resp).await;
+        assert_eq!(body["error"]["code"], "idempotency_error");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert!(body.get("type").is_none(), "OpenAI 信封不应有顶层 type");
+
+        // 同一错误在两种信封下必须是同一状态码（曾经 Anthropic 侧把「键过长」误报成 409）
+        let expected = [
+            StatusCode::BAD_REQUEST,
+            StatusCode::BAD_REQUEST,
+            StatusCode::CONFLICT,
+            StatusCode::CONFLICT,
+        ];
+        for (err, want) in [
+            error::ServerError::IdempotencyKeyInvalid { anthropic: false },
+            error::ServerError::IdempotencyConflict { anthropic: false },
+            error::ServerError::IdempotencyInProgress { anthropic: false },
+            error::ServerError::IdempotencyUnreplayable { anthropic: false },
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            assert_eq!(
+                err.into_response().status(),
+                want,
+                "OpenAI 信封状态码不一致"
+            );
+        }
+        for (err, want) in [
+            error::ServerError::IdempotencyKeyInvalid { anthropic: true },
+            error::ServerError::IdempotencyConflict { anthropic: true },
+            error::ServerError::IdempotencyInProgress { anthropic: true },
+            error::ServerError::IdempotencyUnreplayable { anthropic: true },
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            assert_eq!(
+                err.into_response().status(),
+                want,
+                "Anthropic 信封状态码必须与 OpenAI 侧一致"
+            );
+        }
+
+        let resp = error::ServerError::IdempotencyConflict { anthropic: true }.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp).await;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert!(
+            body["error"].get("code").is_none(),
+            "Anthropic 信封不应有 code"
+        );
+    }
+
     /// 带 `x-request-id` 中间件的桩路由（与 `build_router` 的最外层一致）
     fn request_id_router() -> Router {
         Router::new()

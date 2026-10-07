@@ -31,6 +31,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `config.example.toml` 的每个字段都必须在前端出现，否则 CI 失败
   （后端新增字段而前端漏掉时，管理面板会把该字段以空值写回，等于静默清空配置）
 
+### Fixed
+- **OpenAI 流式响应缺少 `data: [DONE]` 终止符**（v0.5.1 发布前的真实账号 E2E 发现，
+  同样存在于 0.5.0）：`/v1/chat/completions` 的 SSE 流此前只以最后一个 chunk 结束，
+  按规范判定结束的客户端只能依赖连接关闭，无法区分「正常结束」与「上游截断」。
+  现在流正常结束时统一补 `data: [DONE]`（`openai_adapter::response::sse_stream`），
+  并加了字节级回归测试。`/v1/responses` 与 Anthropic 的终止语义（`[DONE]` /
+  `message_stop`）本来就正确，未受影响
+
+- **幂等错误的信封跟随请求协议**（同一轮 E2E 发现）：`409 / 400 idempotency_error`
+  此前无论从哪条路由触发都返回 Anthropic 信封，`/v1/*` 的 OpenAI 客户端会解析失败。
+  现在按路由返回对应信封，并有单元测试锁住两侧形态
+
 ### Changed
 - **收紧 lint 基线**（`Cargo.toml` 的 `[workspace.lints]`）：新增 rustc
   `elided_lifetimes_in_paths` / `let_underscore_drop` / `trivial_casts` /

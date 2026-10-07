@@ -681,3 +681,31 @@ UA / `client_platform` / `client_os` 切成 web，则应同时设 `emulation = "
 4. 只有「A 长期正常且 B 也正常」时，才能说本代理的封号风险与官方客户端接近。
 
 
+
+## 2026-10-07：v0.5.1 发布前的真实账号 E2E（账号 B）
+
+按 `AGENTS.md` 的《Release Checklist》第 5 项，用 release 二进制 + **账号
+`1460183479@qq.com`（账号 B）**做了一次最小化的链路验证。
+
+**为什么动账号 B**：v0.5.1 改的是工程质量（lint / 零拷贝 / 幂等性 / 协议对齐 / 前端），
+其中「SSE 解析与序列化」「finish_reason 映射」「幂等回放」都属于请求链路，
+单元测试无法覆盖与上游的真实交互，必须在发布前用真实账号跑一次；请求数压到最少
+（启动健康检查 1 次 + 业务请求 3 次 + 幂等回放 2 次，其中回放命中缓存、**不打上游**）。
+
+| 时间 (UTC) | 检查 | 结果 |
+|-----------|------|------|
+| 11:40 | 启动 release 二进制（账号初始化 + 健康检查 completion） | ✅ `muted=Some(0), mute_until=None` |
+| 11:40 | 无上游流量：`/health`、`/admin/`、`/v1/models`、401 信封、`x-request-id`、`n=2` 校验 | ✅ 全部符合预期（401 为 `invalid_api_key`、n=2 返回 400） |
+| 11:41 | OpenAI 流式（带 `Idempotency-Key`） | ⚠️ **发现缺陷：SSE 流没有 `data: [DONE]` 终止符**（同样存在于 v0.5.0） |
+| 11:42 | 同 key 同 body 重放 | ✅ `idempotent-replayed: true`，响应体**字节级一致**，无第二次上游请求 |
+| 11:42 | Anthropic 流式 | ✅ `message_start → content_block_* → message_delta → message_stop`，无 `error` 事件 |
+| 11:43 | Responses 非流式 + `GET /v1/responses/{id}` | ✅ 200 / 不存在时 404 |
+| 11:44 | 同 key + **不同 body** | ⚠️ 返回 400 但**用了 Anthropic 信封**（OpenAI 路由上解析不了） |
+| 11:52 | 修复后复验（0 次上游）：`[DONE]`、409 并发重复、两种信封 | ✅ `[DONE]` 恰好一次且在末 chunk 之后；并发重复 409；OpenAI/Anthropic 各自信封与状态码一致 |
+
+**本轮 E2E 的价值**：两个缺陷（缺 `[DONE]`、幂等错误信封用错协议）都是
+**只有真实请求才会暴露**的问题，且第一个从 v0.5.0 起就存在 ——
+这正是《Release Checklist》第 5 项要求「改动请求链路必须做真实账号 E2E」的原因。
+
+**风控观察**：账号 B 在本次 E2E 结束后的登录复查中仍是 `is_muted=0`
+（+6h / +24h 的复查照旧由定时任务执行；若出现禁言，按既定流程更正 release notes 与本文档）。

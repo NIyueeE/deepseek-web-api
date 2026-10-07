@@ -246,6 +246,7 @@ fn check_idempotency(
     path: &str,
     headers: &HeaderMap,
     body: &Bytes,
+    anthropic: bool,
 ) -> Result<Idempotency, ServerError> {
     let Some(key) = headers
         .get(IDEMPOTENCY_KEY_HEADER)
@@ -256,16 +257,17 @@ fn check_idempotency(
         return Ok(Idempotency::Disabled);
     };
     if key.len() > IDEMPOTENCY_KEY_MAX_LEN {
-        return Err(ServerError::IdempotencyConflict);
+        return Err(ServerError::IdempotencyKeyInvalid { anthropic });
     }
 
     let scope = format!("{}:POST {path}", api_key.as_deref().unwrap_or(""));
     let fp = idempotency::fingerprint(&scope, body);
-    match state.idempotency.begin(&scope, key, fp)? {
+    match state.idempotency.begin(&scope, key, fp) {
         Begin::Fresh(guard) => Ok(Idempotency::Fresh(guard)),
         Begin::Replay(recorded) => Ok(Idempotency::Replay(recorded)),
-        Begin::InProgress => Err(ServerError::IdempotencyInProgress),
-        Begin::Unreplayable => Err(ServerError::IdempotencyUnreplayable),
+        Begin::InProgress => Err(ServerError::IdempotencyInProgress { anthropic }),
+        Begin::Conflict => Err(ServerError::IdempotencyConflict { anthropic }),
+        Begin::Unreplayable => Err(ServerError::IdempotencyUnreplayable { anthropic }),
     }
 }
 
@@ -297,8 +299,8 @@ fn json_bytes<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, ServerError> {
 
 /// 命中回放时提前返回；否则返回执行守卫（未带 key 时为 `None`）
 macro_rules! idempotency_gate {
-    ($state:expr, $api_key:expr, $path:expr, $headers:expr, $body:expr) => {
-        match check_idempotency($state, $api_key, $path, $headers, $body)? {
+    ($state:expr, $api_key:expr, $path:expr, $headers:expr, $body:expr, $anthropic:expr) => {
+        match check_idempotency($state, $api_key, $path, $headers, $body, $anthropic)? {
             Idempotency::Replay(recorded) => return Ok(replay_response(recorded)),
             Idempotency::Fresh(guard) => Some(guard),
             Idempotency::Disabled => None,
@@ -332,7 +334,14 @@ pub(crate) async fn chat_completions(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
-    let guard = idempotency_gate!(&state, &api_key, "/v1/chat/completions", &headers, &body);
+    let guard = idempotency_gate!(
+        &state,
+        &api_key,
+        "/v1/chat/completions",
+        &headers,
+        &body,
+        false
+    );
     let timer = super::stats::RequestTimer::new(&state.stats);
     let timer_start = std::time::Instant::now();
     let req: ChatCompletionsRequest = serde_json::from_slice(&body)
@@ -353,21 +362,17 @@ pub(crate) async fn chat_completions(
             let ct_ref = completion_tokens.clone();
             let elapsed = timer_start.elapsed();
             let latency_ms = elapsed.as_secs() * 1000 + u64::from(elapsed.subsec_millis());
-            let sse = stream
-                .inspect(move |chunk| {
-                    if let Ok(c) = chunk
-                        && let Some(u) = &c.usage
-                    {
-                        ct_ref.store(
-                            u64::from(u.completion_tokens),
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
-                    }
-                })
-                .map(|chunk| match chunk {
-                    Ok(c) => crate::openai_adapter::response::sse_serialize(&c),
-                    Err(e) => Err(e),
-                });
+            // sse_stream 会在流正常结束时补 `data: [DONE]`（OpenAI 规范要求）
+            let sse = crate::openai_adapter::response::sse_stream(stream.inspect(move |chunk| {
+                if let Ok(c) = chunk
+                    && let Some(u) = &c.usage
+                {
+                    ct_ref.store(
+                        u64::from(u.completion_tokens),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            }));
             let guarded = TokenGuardStream {
                 inner: sse,
                 _guard: TokenGuard {
@@ -459,7 +464,7 @@ pub(crate) async fn responses(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
-    let guard = idempotency_gate!(&state, &api_key, "/v1/responses", &headers, &body);
+    let guard = idempotency_gate!(&state, &api_key, "/v1/responses", &headers, &body, false);
     let timer = super::stats::RequestTimer::new(&state.stats);
     let timer_start = std::time::Instant::now();
     let req: ResponsesRequest = serde_json::from_slice(&body)
@@ -613,7 +618,14 @@ pub(crate) async fn anthropic_messages(
     let timer = super::stats::RequestTimer::new(&state.stats);
     let timer_start = std::time::Instant::now();
 
-    let guard = idempotency_gate!(&state, &api_key, "/anthropic/v1/messages", &headers, &body);
+    let guard = idempotency_gate!(
+        &state,
+        &api_key,
+        "/anthropic/v1/messages",
+        &headers,
+        &body,
+        true
+    );
     let req: MessagesRequest = serde_json::from_slice(&body)
         .map_err(|e| AnthropicCompatError::BadRequest(format!("invalid JSON body: {e}")))?;
     log::debug!(target: "http::request", "req={} POST /anthropic/v1/messages stream={}", request_id, req.stream);

@@ -25,7 +25,7 @@ use tokio::time::Sleep;
 use ds_core::StreamEvent;
 
 use crate::openai_adapter::{
-    OpenAIAdapterError,
+    OpenAIAdapterError, StreamResponse,
     types::{
         ChatCompletionsResponse, ChatCompletionsResponseChunk, Choice, ChunkChoice, Delta,
         MessageResponse, ToolCall, Usage,
@@ -398,6 +398,24 @@ pub(crate) struct StreamCfg {
     pub tag_config: Arc<TagConfig>,
 }
 
+/// 把 chunk 流转换为 SSE 字节流，并在流正常结束时补上规范的 `data: [DONE]`
+///
+/// OpenAI 的流式响应**必须**以 `data: [DONE]` 结束：缺少它时，按规范判定结束的
+/// 客户端（`openai-python` 的 `SSEDecoder`、部分网关）只能依赖连接关闭，
+/// 正常结束与截断无法区分。2026-10-07 的真实账号 E2E 实测发现本代理此前就没发。
+pub(crate) fn sse_stream<S>(chunks: S) -> StreamResponse
+where
+    S: Stream<Item = Result<ChatCompletionsResponseChunk, OpenAIAdapterError>> + Send + 'static,
+{
+    Box::pin(
+        chunks
+            .map(|chunk| chunk.and_then(|c| sse_serialize(&c)))
+            .chain(futures::stream::once(async {
+                Ok(Bytes::from_static(b"data: [DONE]\n\n"))
+            })),
+    )
+}
+
 /// 流式响应：把 StreamEvent 流转换为 ChatCompletionsResponseChunk 流
 pub(crate) fn stream<S>(ds_stream: S, model: String, cfg: StreamCfg) -> ChunkStream
 where
@@ -686,6 +704,47 @@ mod tests {
         assert_eq!(msg.content.as_deref(), Some("hello world"));
         assert_eq!(resp.choices[0].finish_reason, Some("stop"));
         assert_eq!(resp.usage.as_ref().unwrap().completion_tokens, 41);
+    }
+
+    /// 回归（2026-10-07 真实账号 E2E 发现）：OpenAI 流式响应必须以 `data: [DONE]` 结束。
+    ///
+    /// 缺失该终止符时，按规范判定结束的客户端只能依赖连接关闭，
+    /// 无法区分「正常结束」与「上游截断」。
+    #[tokio::test]
+    async fn sse_stream_terminates_with_done() {
+        let chunks = vec![
+            Ok(super::converter::make_chunk(
+                "deepseek-default",
+                Delta {
+                    content: Some("hi".to_string()),
+                    ..Default::default()
+                },
+                None,
+            )),
+            Ok(super::converter::make_chunk(
+                "deepseek-default",
+                Delta::default(),
+                Some("stop"),
+            )),
+        ];
+        let mut stream = sse_stream(futures::stream::iter(chunks));
+        let mut out = Vec::new();
+        while let Some(item) = stream.next().await {
+            out.extend_from_slice(&item.unwrap());
+        }
+        let text = String::from_utf8(out).unwrap();
+
+        assert!(
+            text.ends_with("data: [DONE]\n\n"),
+            "流必须以 [DONE] 终止，实际结尾: {:?}",
+            &text[text.len().saturating_sub(80)..]
+        );
+        assert_eq!(text.matches("data: [DONE]").count(), 1, "只应出现一次");
+        let done_pos = text.find("data: [DONE]").unwrap();
+        assert!(
+            text[..done_pos].contains("\"finish_reason\":\"stop\""),
+            "[DONE] 必须出现在最后一个 chunk 之后"
+        );
     }
 
     /// 回归（issue #58）：中文逐字流式输出时，聚合结果必须与原文**逐字节一致**，

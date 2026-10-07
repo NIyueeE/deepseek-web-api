@@ -193,13 +193,27 @@ SDK 会据此抛出对应异常。
 **现状**：最外层中间件为每个请求生成 `req-{n}`，写入请求扩展（handler 复用同一个 ID 打日志）
 并回填到**所有**响应（含 401 等中间件产生的响应）。
 
+### 1.17 OpenAI 流式响应缺少 `data: [DONE]`（v0.5.1）
+
+**规范**：`CreateChatCompletionStreamResponse` 的 SSE 流以 `data: [DONE]` 结束；
+`openai-python` 的 `SSEDecoder` 以该帧作为迭代终止条件。
+
+**修复前**：`/v1/chat/completions` 的字节流只有 chunk，没有终止帧 ——
+客户端只能等连接关闭，正常结束与上游截断不可区分。
+2026-10-07 用 release 二进制 + 真实账号做流式请求时实测发现（`grep -c DONE` = 0），
+本文件 §2 早先「`[DONE]` 正确」的结论与实际实现不符，已按实测更正。
+
+**现状**：`openai_adapter::response::sse_stream()` 在流正常结束时追发
+`data: [DONE]\n\n`，并有回归测试锁住「恰好一次、且在最后一个 chunk 之后」。
+`/v1/responses` 的 `[DONE]` 与 Anthropic 的 `message_stop` 本来就存在，未受影响。
+
 ---
 
 ## 2. 已确认符合规范、无需修改
 
 | 项目 | 结论 |
 |------|------|
-| 流式终止符 `data: [DONE]` | 正确。`openai-python` `_streaming.py` 显式跳过 `[DONE]`，且要求存在（否则 `SSEDecoder` 迭代提前结束） |
+| 流式终止符 `data: [DONE]` | **2026-10-07 修正**：`openai-python` `_streaming.py` 显式跳过 `[DONE]`，且要求存在（否则 `SSEDecoder` 迭代提前结束）。本代理此前**漏发**，见 §1.17；v0.5.1 起补齐并有回归测试 |
 | `chat.completion.chunk` / `chat.completion` 的 `object` 取值 | 正确 |
 | `finish_reason` 取值集合 | 仅输出 `stop` / `tool_calls`，均在规范枚举内 |
 | `usage` 字段名 `prompt_tokens` / `completion_tokens` / `total_tokens` | 正确 |

@@ -28,8 +28,6 @@ use bytes::Bytes;
 use futures::Stream;
 use pin_project_lite::pin_project;
 
-use super::error::ServerError;
-
 /// 幂等条目存活时间
 const TTL: Duration = Duration::from_hours(24);
 /// 条目数上限（超出后淘汰最旧的已完成条目）
@@ -88,6 +86,8 @@ pub(crate) enum Begin {
     Replay(RecordedResponse),
     /// 同键请求正在执行
     InProgress,
+    /// 同键但请求体不同
+    Conflict,
     /// 有同键记录但内容不可回放（超限 / 上次中断）
     Unreplayable,
 }
@@ -108,15 +108,11 @@ impl IdempotencyStore {
         }
     }
 
-    /// 尝试占位。`Ok(Begin::Fresh)` 表示调用方获得执行权。
+    /// 尝试占位；`Begin::Fresh` 表示调用方获得执行权。
     ///
     /// `scope` 是 `(API key, 路径)`；`fingerprint` 用于识别「同键不同体」。
-    pub(crate) fn begin(
-        self: &Arc<Self>,
-        scope: &str,
-        key: &str,
-        fingerprint: u64,
-    ) -> Result<Begin, ServerError> {
+    /// 错误信封的形态由调用方（handler）决定，因此这里只返回判定结果。
+    pub(crate) fn begin(self: &Arc<Self>, scope: &str, key: &str, fingerprint: u64) -> Begin {
         let cache_key = format!("{scope}\u{1}{key}");
 
         // 查找与占位必须在**同一次持锁**内完成：否则两个并发的同键请求
@@ -137,25 +133,25 @@ impl IdempotencyStore {
                 inner.evict_overflow();
                 drop(inner);
                 // 占位成功即首次执行；这里直接返回，避免再读一次状态
-                return Ok(Begin::Fresh(IdempotencyGuard {
+                return Begin::Fresh(IdempotencyGuard {
                     store: Arc::clone(self),
                     cache_key,
                     entry,
                     finished: false,
-                }));
+                });
             }
         };
 
         // 已有条目：在缓存锁之外读取状态（锁顺序固定为 map → entry）
         if entry.fingerprint != fingerprint {
-            return Err(ServerError::IdempotencyConflict);
+            return Begin::Conflict;
         }
         let state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(match &*state {
+        match &*state {
             EntryState::InFlight => Begin::InProgress,
             EntryState::Completed(r) => Begin::Replay(r.clone()),
             EntryState::Unreplayable => Begin::Unreplayable,
-        })
+        }
     }
 
     fn commit(&self, cache_key: &str, entry: &Arc<Entry>, recorded: RecordedResponse) {
@@ -441,12 +437,12 @@ mod tests {
     fn fresh_then_replay() {
         let s = store();
         let fp = fingerprint("k:/v1/chat/completions", b"{\"a\":1}");
-        let Begin::Fresh(guard) = s.begin("k:/v1/chat/completions", "idem-1", fp).unwrap() else {
+        let Begin::Fresh(guard) = s.begin("k:/v1/chat/completions", "idem-1", fp) else {
             panic!("首次请求应为 Fresh");
         };
         guard.complete(200, "application/json", Bytes::from_static(b"{}"));
 
-        match s.begin("k:/v1/chat/completions", "idem-1", fp).unwrap() {
+        match s.begin("k:/v1/chat/completions", "idem-1", fp) {
             Begin::Replay(r) => {
                 assert_eq!(r.status, 200);
                 assert_eq!(r.body, Bytes::from_static(b"{}"));
@@ -459,13 +455,12 @@ mod tests {
     fn same_key_different_body_conflicts() {
         let s = store();
         let scope = "k:/v1/responses";
-        let Begin::Fresh(_guard) = s.begin(scope, "idem-2", fingerprint(scope, b"a")).unwrap()
-        else {
+        let Begin::Fresh(_guard) = s.begin(scope, "idem-2", fingerprint(scope, b"a")) else {
             panic!("首次请求应为 Fresh");
         };
         assert!(matches!(
             s.begin(scope, "idem-2", fingerprint(scope, b"b")),
-            Err(ServerError::IdempotencyConflict)
+            Begin::Conflict
         ));
     }
 
@@ -474,13 +469,10 @@ mod tests {
         let s = store();
         let scope = "k:/v1/chat/completions";
         let fp = fingerprint(scope, b"same");
-        let Begin::Fresh(_guard) = s.begin(scope, "idem-3", fp).unwrap() else {
+        let Begin::Fresh(_guard) = s.begin(scope, "idem-3", fp) else {
             panic!("首次请求应为 Fresh");
         };
-        assert!(matches!(
-            s.begin(scope, "idem-3", fp).unwrap(),
-            Begin::InProgress
-        ));
+        assert!(matches!(s.begin(scope, "idem-3", fp), Begin::InProgress));
     }
 
     /// 未完成的守卫被丢弃（panic / 提前 return）后，键必须可以重新使用
@@ -490,15 +482,12 @@ mod tests {
         let scope = "k:/v1/chat/completions";
         let fp = fingerprint(scope, b"x");
         {
-            let Begin::Fresh(_guard) = s.begin(scope, "idem-4", fp).unwrap() else {
+            let Begin::Fresh(_guard) = s.begin(scope, "idem-4", fp) else {
                 panic!("首次请求应为 Fresh");
             };
         }
         assert_eq!(s.len(), 0, "未完成的占位应被撤销");
-        assert!(matches!(
-            s.begin(scope, "idem-4", fp).unwrap(),
-            Begin::Fresh(_)
-        ));
+        assert!(matches!(s.begin(scope, "idem-4", fp), Begin::Fresh(_)));
     }
 
     /// 过期条目不再回放
@@ -507,7 +496,7 @@ mod tests {
         let s = store();
         let scope = "k:/v1/chat/completions";
         let fp = fingerprint(scope, b"y");
-        let Begin::Fresh(_guard) = s.begin(scope, "idem-5", fp).unwrap() else {
+        let Begin::Fresh(_guard) = s.begin(scope, "idem-5", fp) else {
             panic!("首次请求应为 Fresh");
         };
         {
@@ -533,10 +522,7 @@ mod tests {
                 .entries
                 .insert("k:/v1/chat/completions\u{1}idem-5".to_string(), expired);
         }
-        assert!(matches!(
-            s.begin(scope, "idem-5", fp).unwrap(),
-            Begin::Fresh(_)
-        ));
+        assert!(matches!(s.begin(scope, "idem-5", fp), Begin::Fresh(_)));
     }
 
     /// 超过单条上限的流式记录不可回放，且条目被清理
@@ -545,7 +531,7 @@ mod tests {
         let s = store();
         let scope = "k:/v1/chat/completions";
         let fp = fingerprint(scope, b"z");
-        let Begin::Fresh(guard) = s.begin(scope, "idem-6", fp).unwrap() else {
+        let Begin::Fresh(guard) = s.begin(scope, "idem-6", fp) else {
             panic!("首次请求应为 Fresh");
         };
         let mut recorder = guard.into_stream_recorder(200, "text/event-stream");
@@ -560,7 +546,7 @@ mod tests {
         let s = store();
         let scope = "k:/v1/chat/completions";
         let fp = fingerprint(scope, b"w");
-        let Begin::Fresh(guard) = s.begin(scope, "idem-7", fp).unwrap() else {
+        let Begin::Fresh(guard) = s.begin(scope, "idem-7", fp) else {
             panic!("首次请求应为 Fresh");
         };
         let mut recorder = guard.into_stream_recorder(200, "text/event-stream");
@@ -568,7 +554,7 @@ mod tests {
         recorder.record(b"data: [DONE]\n\n");
         recorder.finish();
 
-        match s.begin(scope, "idem-7", fp).unwrap() {
+        match s.begin(scope, "idem-7", fp) {
             Begin::Replay(r) => {
                 assert_eq!(r.content_type, "text/event-stream");
                 assert_eq!(&r.body[..], b"data: {\"a\":1}\n\ndata: [DONE]\n\n");
@@ -585,7 +571,7 @@ mod tests {
         let s = store();
         let scope = "k:/v1/chat/completions";
         let fp = fingerprint(scope, b"eof");
-        let Begin::Fresh(guard) = s.begin(scope, "idem-8", fp).unwrap() else {
+        let Begin::Fresh(guard) = s.begin(scope, "idem-8", fp) else {
             panic!("首次请求应为 Fresh");
         };
         let inner = futures::stream::iter(vec![
@@ -597,7 +583,7 @@ mod tests {
         while stream.next().await.is_some() {}
         drop(stream);
 
-        match s.begin(scope, "idem-8", fp).unwrap() {
+        match s.begin(scope, "idem-8", fp) {
             Begin::Replay(r) => assert_eq!(&r.body[..], b"data: 1\n\ndata: [DONE]\n\n"),
             _ => panic!("完整消费的流应可回放"),
         }
@@ -609,7 +595,7 @@ mod tests {
         let s = store();
         let scope = "k:/v1/chat/completions";
         let fp = fingerprint(scope, b"drop");
-        let Begin::Fresh(guard) = s.begin(scope, "idem-9", fp).unwrap() else {
+        let Begin::Fresh(guard) = s.begin(scope, "idem-9", fp) else {
             panic!("首次请求应为 Fresh");
         };
         let inner = futures::stream::iter(vec![Ok::<Bytes, std::io::Error>(Bytes::from_static(
@@ -620,10 +606,7 @@ mod tests {
         drop(stream);
 
         assert_eq!(s.len(), 0, "中断的流不应留下可回放记录");
-        assert!(matches!(
-            s.begin(scope, "idem-9", fp).unwrap(),
-            Begin::Fresh(_)
-        ));
+        assert!(matches!(s.begin(scope, "idem-9", fp), Begin::Fresh(_)));
     }
 
     /// 容量上限：最旧的已完成条目被淘汰，最新的仍在
@@ -634,7 +617,7 @@ mod tests {
         for i in 0..CAPACITY + 5 {
             let key = format!("idem-{i}");
             let fp = fingerprint(scope, key.as_bytes());
-            let Begin::Fresh(guard) = s.begin(scope, &key, fp).unwrap() else {
+            let Begin::Fresh(guard) = s.begin(scope, &key, fp) else {
                 panic!("首次请求应为 Fresh");
             };
             guard.complete(200, "application/json", Bytes::from_static(b"{}"));
@@ -642,9 +625,6 @@ mod tests {
         assert!(s.len() <= CAPACITY);
         let last = format!("idem-{}", CAPACITY + 4);
         let fp = fingerprint(scope, last.as_bytes());
-        assert!(matches!(
-            s.begin(scope, &last, fp).unwrap(),
-            Begin::Replay(_)
-        ));
+        assert!(matches!(s.begin(scope, &last, fp), Begin::Replay(_)));
     }
 }

@@ -58,12 +58,17 @@ pub enum ServerError {
     Unauthorized,
     /// 资源不存在
     NotFound(String),
+    /// 幂等键本身不合法（超长，400）
+    IdempotencyKeyInvalid { anthropic: bool },
     /// 幂等键被复用在不同请求体上（400）
-    IdempotencyConflict,
+    ///
+    /// `anthropic` 决定错误信封形态：同一个幂等错误可能从 `/v1/*` 或
+    /// `/anthropic/*` 触发，必须各自返回对应 SDK 能解析的信封。
+    IdempotencyConflict { anthropic: bool },
     /// 同幂等键的请求正在执行（409）
-    IdempotencyInProgress,
+    IdempotencyInProgress { anthropic: bool },
     /// 同幂等键的历史响应不可回放（超限 / 上次中断，409）
-    IdempotencyUnreplayable,
+    IdempotencyUnreplayable { anthropic: bool },
 }
 
 impl fmt::Display for ServerError {
@@ -73,15 +78,18 @@ impl fmt::Display for ServerError {
             Self::Anthropic(e) => write!(f, "{e}"),
             Self::Unauthorized => write!(f, "invalid api token"),
             Self::NotFound(id) => write!(f, "模型 '{id}' 不存在"),
-            Self::IdempotencyConflict => write!(
+            Self::IdempotencyKeyInvalid { .. } => {
+                write!(f, "Idempotency-Key 过长（上限 255 字符）")
+            }
+            Self::IdempotencyConflict { .. } => write!(
                 f,
                 "Idempotency-Key 已用于不同的请求体；如需复用请使用新的 key"
             ),
-            Self::IdempotencyInProgress => write!(
+            Self::IdempotencyInProgress { .. } => write!(
                 f,
                 "相同 Idempotency-Key 的请求正在处理中，请稍后重试或改用新的 key"
             ),
-            Self::IdempotencyUnreplayable => write!(
+            Self::IdempotencyUnreplayable { .. } => write!(
                 f,
                 "相同 Idempotency-Key 的历史响应不可回放（响应体超限或上次未完整结束）"
             ),
@@ -105,22 +113,35 @@ impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         match &self {
             Self::Anthropic(e) => anthropic_error_response(e),
-            // `/anthropic/*` 上的幂等错误必须用 Anthropic 信封，否则 SDK 无法归类
-            Self::IdempotencyConflict
-            | Self::IdempotencyInProgress
-            | Self::IdempotencyUnreplayable => anthropic_idempotency_response(&self),
+            // 幂等错误的信封必须跟随**该请求所属协议**，否则对应 SDK 无法归类
+            Self::IdempotencyKeyInvalid { anthropic }
+            | Self::IdempotencyConflict { anthropic }
+            | Self::IdempotencyInProgress { anthropic }
+            | Self::IdempotencyUnreplayable { anthropic } => {
+                if *anthropic {
+                    anthropic_idempotency_response(&self)
+                } else {
+                    openai_error_response(&self)
+                }
+            }
             _ => openai_error_response(&self),
         }
     }
 }
 
+/// 幂等错误的状态码：OpenAI / Anthropic 两种信封共用，避免同一错误给出不同状态码
+const fn idempotency_status(err: &ServerError) -> StatusCode {
+    match err {
+        ServerError::IdempotencyKeyInvalid { .. } | ServerError::IdempotencyConflict { .. } => {
+            StatusCode::BAD_REQUEST
+        }
+        _ => StatusCode::CONFLICT,
+    }
+}
+
 /// Anthropic 形态的幂等错误（400 / 409）
 fn anthropic_idempotency_response(err: &ServerError) -> Response {
-    let status = if matches!(err, ServerError::IdempotencyConflict) {
-        StatusCode::BAD_REQUEST
-    } else {
-        StatusCode::CONFLICT
-    };
+    let status = idempotency_status(err);
     let body = AnthropicErrorBody {
         outer_type: "error",
         error: AnthropicErrorDetail {
@@ -162,13 +183,11 @@ fn openai_error_response(err: &ServerError) -> Response {
             "model_not_found",
         ),
         // 幂等键冲突属于客户端用法错误：code 对齐 Stripe / OpenAI 的 `idempotency_error`
-        ServerError::IdempotencyConflict => (
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "idempotency_error",
-        ),
-        ServerError::IdempotencyInProgress | ServerError::IdempotencyUnreplayable => (
-            StatusCode::CONFLICT,
+        ServerError::IdempotencyKeyInvalid { .. }
+        | ServerError::IdempotencyConflict { .. }
+        | ServerError::IdempotencyInProgress { .. }
+        | ServerError::IdempotencyUnreplayable { .. } => (
+            idempotency_status(err),
             "invalid_request_error",
             "idempotency_error",
         ),
