@@ -23,6 +23,7 @@ A Rust API proxy that translates DeepSeek's free web chat into standard OpenAI a
 ## Highlights
 
 - **Zero-cost API proxy**: Uses DeepSeek's free web interface — no official API key needed, get OpenAI/Anthropic-compatible endpoints for free
+- **Retry-safe**: `Idempotency-Key` support (the Stripe / OpenAI convention) — a client retry after a timeout never reaches upstream twice; the stored response is replayed byte-for-byte with `idempotent-replayed: true`
 - **Triple protocol support**: OpenAI Chat Completions, the OpenAI Responses API (`/v1/responses` plus `GET /v1/responses/{id}` retrieval) and the Anthropic Messages API — drop-in compatible with mainstream clients
 - **Tool call ready**: Full OpenAI function calling implementation with a 3-tier self-healing pipeline (text repair → JSON repair → model fallback), covering 10+ malformed formats
 - **File upload ready**: Inline data URL files in OpenAI `file`/`image_url` content parts and Anthropic `image`/`document` content blocks are automatically uploaded to DeepSeek sessions; HTTP URLs trigger search mode so the model can access link content directly
@@ -130,6 +131,25 @@ from a real browser. One capture stays valid long-term:
 | GET    | `/anthropic/v1/models/{id}` | Model details (Anthropic format) |
 
 The admin panel is at `/admin` — on first visit you'll be guided to set an admin password.
+
+Every response carries `x-request-id` (e.g. `req-1a2b`), the same id that appears as `req=` in the
+runtime logs, so client-side reports can be matched against server logs.
+
+### Idempotent retries (`Idempotency-Key`)
+
+Send `Idempotency-Key: <unique string>` on `POST /v1/chat/completions`,
+`POST /v1/responses` or `POST /anthropic/v1/messages` (SDKs usually generate one for you):
+
+| Case | Behaviour |
+|------|-----------|
+| First request | Executed normally |
+| Same key + same body, previous run **finished** | Replays the stored response (same status / `Content-Type` / body bytes) with `idempotent-replayed: true` |
+| Same key + same body, previous run **still in flight** | `409 idempotency_error` (never reaches upstream) |
+| Same key + **different body** | `400 idempotency_error` (prevents key reuse mixing up answers) |
+| Previous run was aborted by the client, or the body exceeded 1MB | Record is discarded, so a retry runs as a fresh request |
+
+The cache is **in-process**, bounded and TTL-based (24h, 1024 entries, 1MB per entry, 64MB total):
+it disappears on restart and is never written to disk. Without the header, behaviour is unchanged.
 
 ## Model Mapping
 

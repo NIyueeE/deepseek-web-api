@@ -150,10 +150,11 @@ fn openai_error_response(err: &ServerError) -> Response {
             };
             (status, error_type, code)
         }
+        // 对齐 OpenAI 官方 401 响应：`invalid_request_error` + `invalid_api_key`
         ServerError::Unauthorized => (
             StatusCode::UNAUTHORIZED,
-            "authentication_error",
-            "invalid_api_token",
+            "invalid_request_error",
+            "invalid_api_key",
         ),
         ServerError::NotFound(_) => (
             StatusCode::NOT_FOUND,

@@ -189,6 +189,25 @@ mod tests {
         assert!(err.to_string().contains("messages"));
     }
 
+    /// 规范里 n 必须 ≥ 1；上游只产出单候选，n > 1 必须显式报错而不是静默忽略
+    #[test]
+    fn n_out_of_range_is_rejected() {
+        let mut body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "n": 2
+        });
+        let err = parse_json(body.clone()).unwrap_err();
+        assert!(err.to_string().contains("n=2"), "实际: {err}");
+
+        body["n"] = serde_json::json!(0);
+        let err = parse_json(body.clone()).unwrap_err();
+        assert!(err.to_string().contains("'n'"), "实际: {err}");
+
+        body["n"] = serde_json::json!(1);
+        assert!(parse_json(body).is_ok());
+    }
+
     #[test]
     fn tool_missing_tool_call_id() {
         let body = serde_json::json!({

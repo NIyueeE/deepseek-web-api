@@ -21,7 +21,7 @@ check:
 
 # Build + lint frontend (bun install --frozen-lockfile, bun run typecheck + build + lint)
 check-web:
-  cd web && bun install --frozen-lockfile && bun run typecheck && bun run lint && bun run check:locales && bun run build
+  cd web && bun install --frozen-lockfile && bun run typecheck && bun run lint && bun run check:locales && bun run check:config-parity && bun run build
 
 # 检查 AGENTS.md 的 lint 豁免约定（仅 ds_core/src/accounts/client.rs 允许 #[allow]）
 check-lint-exemptions:
@@ -30,6 +30,10 @@ check-lint-exemptions:
 # 校验三种语言 locale 键集完全一致
 check-locales:
   cd web && bun run check:locales
+
+# 校验 config.example.toml 的字段都在前端出现（避免新增配置在前端漏掉）
+check-config-parity:
+  cd web && bun run check:config-parity
 
 # 校验 docker/config.example.toml 与根目录 config.example.toml 未漂移
 check-config-drift:

@@ -26,6 +26,16 @@ pub(crate) fn apply(req: &ChatCompletionsRequest) -> Result<NormalizedParams, St
         return Err("缺少必填字段 'messages'".into());
     }
 
+    // OpenAI 规范要求 n ≥ 1；上游只产出单个候选，多候选无法兑现时
+    // 必须显式报错，而不是静默只返回一条
+    match req.n {
+        Some(0) => return Err("'n' 必须 ≥ 1".into()),
+        Some(n) if n > 1 => {
+            return Err(format!("不支持 n={n}：上游只返回单个候选（请使用 n=1）"));
+        }
+        _ => {}
+    }
+
     for (i, msg) in req.messages.iter().enumerate() {
         match msg.role.as_str() {
             "tool" if msg.tool_call_id.is_none() => {

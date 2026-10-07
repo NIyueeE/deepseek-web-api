@@ -144,7 +144,14 @@ where
                     } => {
                         trace!(target: "adapter", ">>> conv: finish={finish_reason:?}");
                         *this.finished = true;
-                        let mut chunk = make_chunk(this.model, Delta::default(), Some("stop"));
+                        // 采用上游给出的结束原因（如 length），未知/缺省才退化为 stop；
+                        // 硬编码 "stop" 会把「被截断」伪装成「正常结束」
+                        let finish = match finish_reason.as_deref() {
+                            Some("length") => "length",
+                            Some("tool_calls") => "tool_calls",
+                            _ => "stop",
+                        };
+                        let mut chunk = make_chunk(this.model, Delta::default(), Some(finish));
                         if *this.include_usage
                             && let Some(u) = accumulated_token_usage
                         {

@@ -23,6 +23,8 @@
 ## 项目亮点
 
 - **零成本 API 代理**：使用 DeepSeek 免费网页端，无需官方 API Key，即可获得 OpenAI / Anthropic 兼容接口
+- **幂等重试安全**：支持 `Idempotency-Key` 请求头（Stripe / OpenAI 约定）—— 客户端超时重试
+  不会重复打到上游，命中时字节级回放同一响应并标记 `idempotent-replayed: true`
 - **三协议支持**：同时兼容 OpenAI Chat Completions、OpenAI Responses（`/v1/responses` + `GET /v1/responses/{id}` 检索）与 Anthropic Messages API，主流客户端即插即用
 - **工具调用就绪**：OpenAI function calling 完整实现，工具解析 + 三层自修复管道（文本修复 → JSON 修复 → 模型兜底），覆盖 10+ 异常格式
 - **文件上传就绪**：支持 OpenAI `file` / `image_url` content part 和 Anthropic `image` / `document` content block 的内联 data URL 文件自动上传到 DeepSeek 会话；
@@ -129,6 +131,24 @@ Compose 配置见 [docker/docker-compose.yaml](./docker/docker-compose.yaml)。
 | GET  | `/anthropic/v1/models/{id}` | 模型详情（Anthropic 格式） |
 
 管理面板位于 `/admin`，首次访问引导设置管理密码。
+
+所有响应都带 `x-request-id`（形如 `req-1a2b`），与运行日志里的 `req=` 同源，便于对账排障。
+
+### 幂等重试（`Idempotency-Key`）
+
+在 `POST /v1/chat/completions`、`POST /v1/responses`、`POST /anthropic/v1/messages`
+上带上 `Idempotency-Key: <任意唯一串>`（SDK 一般会自动生成），语义如下：
+
+| 情况 | 结果 |
+|------|------|
+| 首次请求 | 正常执行 |
+| 相同 key + 相同请求体，且上一条**已结束** | 回放缓存的响应（状态码 / `Content-Type` / 响应体字节一致），响应头带 `idempotent-replayed: true` |
+| 相同 key + 相同请求体，上一条**仍在执行** | `409 idempotency_error`（不会穿透到上游） |
+| 相同 key + **不同请求体** | `400 idempotency_error`（避免键复用串答案） |
+| 上一条被客户端中断，或响应体超过 1MB | 记录作废 → 重试按首次请求处理 |
+
+缓存是**进程内**有界 + TTL 24h（1024 条 / 单条 1MB / 总量 64MB），重启即失效、不落盘。
+不带该请求头时行为与普通请求完全一致。
 
 ## 模型映射
 

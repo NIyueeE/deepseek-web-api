@@ -142,6 +142,57 @@ body 形如 `{"type":"invalid_request_error","message":"..."}`。
 **现状**：handler 改为 `invalid JSON body: {e}`，最终消息为
 `bad request: invalid JSON body: ...`。
 
+### 1.12 401 错误信封取值对齐官方（v0.5.1）
+
+**规范/实现**：OpenAI 官方 401 响应为
+`{"error":{"message":"Incorrect API key provided: ...","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}`
+（`type` 是 `invalid_request_error`，`code` 是 `invalid_api_key`）。
+
+**修复前**：本仓库返回 `type=authentication_error`、`code=invalid_api_token` ——
+结构合法但取值与官方不同，按 `code` 分派的网关 / 客户端会归错类。
+
+**现状**：`/v1/*` 的 401 使用官方取值。`/anthropic/*` 仍使用 Anthropic 规范的
+`authentication_error`（两套协议的错误语义不同，不可混用）。
+
+### 1.13 `n` 参数未校验（v0.5.1）
+
+**规范**：`CreateChatCompletionRequest.n` 的 minimum 为 1，语义是「返回的候选数」。
+
+**修复前**：`n` 被解析后静默忽略 —— 客户端请求 `n=3` 只会拿到 1 条候选，
+却无法察觉（`choices[0]` 之外没有任何提示）。
+
+**现状**：`n=0` 与 `n>1` 都返回 `400 invalid_request_error`
+（上游只产出单候选，无法兑现多候选时必须显式报错）。
+
+### 1.14 流式 `finish_reason` 被硬编码为 `stop`（v0.5.1）
+
+**规范**：`finish_reason` 取 `stop` / `length` / `tool_calls` / `content_filter` 等，
+其中 `length` 表示「因 `max_tokens` 或上下文上限被截断」。
+
+**修复前**：`ConverterStream` 在收到 `StreamEvent::Done` 时一律下发 `"stop"`，
+上游给出的结束原因（例如截断）被丢弃 —— 客户端无法区分「答完了」和「被截断了」。
+
+**现状**：采用 `Done` 事件携带的原因（`length` / `tool_calls`），未知或缺省才退化为 `stop`。
+
+### 1.15 Anthropic 流中途错误缺少 `error` 事件（v0.5.1）
+
+**规范**（docs.anthropic.com/en/api/messages-streaming）：流中可下发
+`event: error`，负载为 `{"type":"error","error":{"type":"<kind>","message":"..."}}`，
+SDK 会据此抛出对应异常。
+
+**修复前**：上游在 `message_start` 之后中断时，只补发 `message_delta` + `message_stop` ——
+客户端把**截断**当成正常结束（用户看到半截答案，且不会再重试）。
+
+**现状**：先补发 `error` 事件（`overloaded_error` / `invalid_request_error` / `api_error`），
+再补收尾事件；与 Responses 适配层在同样场景下发 `response.failed` 的行为一致。
+
+### 1.16 缺少 `x-request-id` 响应头（v0.5.1）
+
+**实现**：官方 API 的每个响应都带 `x-request-id`，便于客户端把一次调用与服务端日志对上。
+
+**现状**：最外层中间件为每个请求生成 `req-{n}`，写入请求扩展（handler 复用同一个 ID 打日志）
+并回填到**所有**响应（含 401 等中间件产生的响应）。
+
 ---
 
 ## 2. 已确认符合规范、无需修改
@@ -194,6 +245,7 @@ Agents SDK 的基本用法）：
 | `logit_bias` / `seed` | 上游不支持 |
 | `audio` / `modalities` 输出 | 上游无音频输出能力 |
 | Responses 内置工具执行（`web_search_call` / `file_search_call` / `code_interpreter_call` / `mcp_call`） | 上游不提供；`web_search_preview` 会退化为 DeepSeek 的搜索模式，但不产出对应的 output item |
+| `max_tokens` / `max_completion_tokens` 的**强制截断** | 上游 completion 载荷没有对应字段（真实客户端也不发送），因此无法强制；参数被解析但不生效。上游自身因上下文上限中断时会以 `finish_reason=length` 反映（见 1.14） |
 | `response.reasoning_summary_text.delta` 的 `summary_part` 细分 | 只产出单一段落（`summary_index: 0`） |
 | `store` 的跨进程持久化 | 使用进程内 TTL 缓存，见 [`responses-api.md`](./responses-api.md#previous_response_id-的取舍) |
 | `/v1/responses/input_tokens`、`background` 模式 | 未实现路由，返回 404 |

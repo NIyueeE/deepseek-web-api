@@ -115,6 +115,15 @@ export interface AccountStatus {
   used_this_hour: number;
   /** True when the hourly quota is used up (quota 0 = unlimited, always false) */
   quota_exhausted: boolean;
+  /** Sliding-window start (unix seconds) backing `used_this_hour` */
+  window_started_at: number;
+  /** Seconds until the oldest request leaves the sliding window */
+  window_remaining_secs: number;
+  total_requests: number;
+  first_request_ms: number;
+  last_request_ms: number;
+  /** Gaps (seconds) between recent requests, newest last */
+  recent_intervals: number[];
 }
 
 export interface AdminStatusResponse {
@@ -147,6 +156,7 @@ export interface ModelInfo {
   max_output_tokens?: number;
   context_length?: number;
   context_window?: number;
+  max_context_length?: number;
   max_tokens?: number;
   max_completion_tokens?: number;
 }

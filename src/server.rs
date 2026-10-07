@@ -19,6 +19,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::{
     Json, Router,
     extract::Request,
+    http::{HeaderName, HeaderValue},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -191,6 +192,21 @@ fn build_router(state: AppState, cors_origins: &[String]) -> Router {
         .with_state(state)
         .layer(DefaultBodyLimit::max(10_000_000))
         .layer(build_cors_layer(cors_origins))
+        // 最外层：所有响应（含鉴权失败）都带 `x-request-id`，与日志里的 `req=` 一致
+        .layer(middleware::from_fn(request_id_middleware))
+}
+
+/// 为每个请求生成 `req-{n}`：写入扩展供 handler 复用，并回填 `x-request-id` 响应头
+async fn request_id_middleware(mut req: Request, next: Next) -> Response {
+    let id = handlers::next_request_id();
+    if let Ok(value) = HeaderValue::from_str(&id) {
+        req.extensions_mut().insert(handlers::RequestId(id.clone()));
+        let mut resp = next.run(req).await;
+        resp.headers_mut()
+            .insert(HeaderName::from_static("x-request-id"), value);
+        return resp;
+    }
+    next.run(req).await
 }
 
 /// 构建 CORS 层
@@ -456,6 +472,35 @@ description = "test"
         Arc::new(store::StoreManager::new(&dir, &config_path, config))
     }
 
+    /// 带 `x-request-id` 中间件的桩路由（与 `build_router` 的最外层一致）
+    fn request_id_router() -> Router {
+        Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(middleware::from_fn(request_id_middleware))
+    }
+
+    /// 每个响应都必须带 `x-request-id`，且与日志里的 `req=` 同源
+    #[tokio::test]
+    async fn responses_carry_x_request_id() {
+        let resp = request_id_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let id = resp
+            .headers()
+            .get("x-request-id")
+            .expect("缺少 x-request-id")
+            .to_str()
+            .unwrap();
+        assert!(id.starts_with("req-"), "意外的请求 ID: {id}");
+    }
+
     /// 与 `build_router` 相同的中间件挂载方式，但 handler 用桩函数替代
     /// （真实 handler 需要账号池，单元测试不应触网）
     fn auth_router(store: Arc<store::StoreManager>) -> Router {
@@ -504,8 +549,8 @@ description = "test"
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let body = body_json(resp).await;
         // OpenAI 错误信封：type / message / param / code 四字段齐备
-        assert_eq!(body["error"]["type"], "authentication_error");
-        assert_eq!(body["error"]["code"], "invalid_api_token");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "invalid_api_key");
         assert!(body["error"]["message"].is_string());
         assert!(body["error"].get("param").is_some());
     }

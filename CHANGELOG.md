@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-07
+
+> 本版**不改变**任何与风控相关的行为（`x-hif-leim`、按账号设备身份、传输层拟态、
+> 滑动窗口配额均与 0.5.0 完全一致），因此 0.5.0 的实测结论与验证边界在本版继续适用。
+> 主题是**工程质量**：收紧 lint、零拷贝、幂等性、协议对齐、前后端一致性。
+
+### Added
+- **`Idempotency-Key` 幂等语义**（`src/server/idempotency.rs`）：客户端重试同一个
+  `POST` 时不再重复打到上游（少消耗一次账号配额，也少一次风控可见的请求）
+  - 作用域 `(API key, 方法+路径, key)`；同键 **不同请求体** → `400 idempotency_error`
+  - 同键执行中 → `409`（并发重复不会穿透到上游）
+  - 已完成 → **字节级回放**缓存的响应（含状态码 / `Content-Type`），并带
+    `idempotent-replayed: true`；流式响应同样记录并回放
+  - 客户端中途断开或响应体超过 1MB → 条目作废（不缓存半截答案），重试可真正重跑
+  - 进程内**有界 + TTL 24h**（1024 条 / 单条 1MB / 总量 64MB），重启即失效，不落盘
+  - 未携带该请求头时行为与 0.5.0 **完全一致**
+  - 覆盖端点：`/v1/chat/completions`、`/v1/responses`、`/anthropic/v1/messages`
+- **`x-request-id` 响应头**：由最外层中间件生成 `req-{n}` 并回填到**所有**响应
+  （含 401），与日志里的 `req=` 完全同源，便于客户端 ↔ 日志对账
+- **前端路由级代码分割**：5 个页面改为 `React.lazy` + `Suspense`，首屏 JS 从
+  511KB 降到 339KB（gzip 107KB），各页面按访问加载（每个约 20KB）
+- **配置字段前后端一致性闸门**（`web/scripts/check-config-parity.mjs`）：
+  `config.example.toml` 的每个字段都必须在前端出现，否则 CI 失败
+  （后端新增字段而前端漏掉时，管理面板会把该字段以空值写回，等于静默清空配置）
+
+### Changed
+- **收紧 lint 基线**（`Cargo.toml` 的 `[workspace.lints]`）：新增 rustc
+  `elided_lifetimes_in_paths` / `let_underscore_drop` / `trivial_casts` /
+  `unused_lifetimes` 等，以及 clippy `needless_pass_by_value` / `assigning_clones` /
+  `map_unwrap_or` / `cast_possible_truncation` / `branches_sharing_code` /
+  `items_after_statements` / `significant_drop_tightening` 等约 30 条。
+  修复过程中顺带消除若干真实隐患：`f64 → i64` 静默饱和、时间戳 `u64 → i64` 回绕、
+  跨 `await` 持有 `DashMap` 分片读锁、`save_admin` 写锁未及时释放、
+  日志轮转错误被 `let _ =` 吞掉
+- **零拷贝化 SSE 关键路径**：
+  - SSE 帧改用 `BytesMut::split_to` 做 O(1) 切分（此前每帧 `Vec::drain` + 两次
+    `String` 拷贝），帧文本合法时直接借用字节缓冲
+  - 增量内容从解析出的 JSON 里**移出所有权**交给下游事件（不再「解析一份 + 拷一份」），
+    `PatchState` 也不再累积全文（长响应下省下与响应等长的内存）
+  - 事件队列 `Vec` → `VecDeque`：去掉每个事件一次的整体克隆与 O(n) 的 `remove(0)`
+  - Anthropic / Responses 的 SSE 帧改为单次分配直写字节（此前最多 4 次分配）
+- **协议对齐**（详见 `docs/compat-audit.md`）：
+  - OpenAI 401 信封对齐官方取值：`type=invalid_request_error`、`code=invalid_api_key`
+    （此前为 `authentication_error` / `invalid_api_token`）
+  - `n` 参数按规范校验：`n=0` / `n>1` 返回 `400`（上游只产出单候选，此前静默忽略）
+  - 流式 `finish_reason` 不再硬编码为 `stop`：采用上游给出的结束原因（如 `length`）
+  - Anthropic 流中途上游错误时补发规范的 `error` 事件（`overloaded_error` /
+    `invalid_request_error` / `api_error`），不再把截断伪装成正常结束
+- **请求路径不再有 `serde_json` 序列化 `unwrap`**：失败返回 500 而不是 panic
+- 账号动态移除、账号池关闭等无 `await` 的接口去掉伪 `async`（`remove_account`
+  变为同步；无实际清理动作的 `AccountPool::shutdown` 删除）
+
 ## [0.5.0] - 2026-10-07
 
 > **验证边界（务必阅读）**：本版把 2026-10-07 一整轮的防封号工作**合并为一个版本**

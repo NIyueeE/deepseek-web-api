@@ -77,6 +77,9 @@ jobs:
       - name: Verify i18n locales have identical key sets
         run: bun run check:locales
         working-directory: web
+      - name: Verify config.example.toml fields are covered by the frontend
+        run: bun run check:config-parity
+        working-directory: web
       - name: Build frontend
         run: bun run build
         working-directory: web

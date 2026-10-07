@@ -370,6 +370,11 @@ pub enum MessagesResponseChunk {
         output_tokens: Option<u32>,
     },
     MessageStop,
+    /// 流中错误（规范里的 `error` 事件）：上游中断时下发，避免把截断伪装成正常结束
+    Error {
+        error_type: &'static str,
+        message: String,
+    },
 }
 
 impl MessagesResponseChunk {
@@ -392,6 +397,7 @@ impl MessagesResponseChunk {
             Self::Ping => "ping",
             Self::MessageDelta { .. } => "message_delta",
             Self::MessageStop => "message_stop",
+            Self::Error { .. } => "error",
         }
     }
 
@@ -443,6 +449,18 @@ impl serde::Serialize for SseEventRef<'_> {
             MessagesResponseChunk::ContentBlockStop { index } => {
                 map.serialize_entry("index", index)?;
             }
+            MessagesResponseChunk::Error {
+                error_type,
+                message,
+            } => {
+                map.serialize_entry(
+                    "error",
+                    &UsageErrorBody {
+                        error_type,
+                        message,
+                    },
+                )?;
+            }
             // ping / message_stop 只有 `type` 字段
             MessagesResponseChunk::Ping | MessagesResponseChunk::MessageStop => {}
             MessagesResponseChunk::MessageDelta {
@@ -476,6 +494,14 @@ impl serde::Serialize for SseEventRef<'_> {
 struct StopReasonDelta<'a> {
     stop_reason: Option<&'a str>,
     stop_sequence: Option<&'a str>,
+}
+
+/// `error` 事件的负载（`{"type": ..., "message": ...}`）
+#[derive(Serialize)]
+struct UsageErrorBody<'a> {
+    #[serde(rename = "type")]
+    error_type: &'a str,
+    message: &'a str,
 }
 
 /// `message_delta.usage` 负载（规范中只有 `output_tokens` 为必填）

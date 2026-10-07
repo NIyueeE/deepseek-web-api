@@ -287,6 +287,21 @@ where
                         this.state.finished = true;
                         let mut events: Vec<MessagesResponseChunk> =
                             this.state.transition_to(BlockKind::None);
+                        // 规范允许在流中途下发 `error` 事件，SDK 会据此抛出错误。
+                        // 只补 message_stop 会让客户端把「上游中断」当成正常结束。
+                        let (error_type, message) = match &e {
+                            OpenAIAdapterError::Overloaded => {
+                                ("overloaded_error", "上游限流，请稍后重试".to_string())
+                            }
+                            OpenAIAdapterError::BadRequest(msg) => {
+                                ("invalid_request_error", msg.clone())
+                            }
+                            _ => ("api_error", e.to_string()),
+                        };
+                        events.push(MessagesResponseChunk::Error {
+                            error_type,
+                            message,
+                        });
                         events.push(MessagesResponseChunk::MessageDelta {
                             stop_reason: None,
                             stop_sequence: None,
@@ -810,7 +825,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upstream_error_after_start_sends_message_stop() {
+    async fn upstream_error_after_start_emits_error_then_stop() {
         let events = collect_results(vec![
             Ok(role_chunk("deepseek-default", "chatcmpl-err")),
             Ok(content_chunk("Hi")),
@@ -822,6 +837,8 @@ mod tests {
         let events: Vec<_> = events.into_iter().map(Result::unwrap).collect();
         assert_eq!(events.last().unwrap().event_name(), "message_stop");
         assert_eq!(events[events.len() - 2].event_name(), "message_delta");
+        // 规范里的 `error` 事件：SDK 会抛出错误，而不是把截断当成正常结束
+        assert_eq!(events[events.len() - 3].event_name(), "error");
     }
 
     #[tokio::test]

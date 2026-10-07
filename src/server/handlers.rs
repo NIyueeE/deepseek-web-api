@@ -37,6 +37,25 @@ use super::stats::Stats;
 use super::store::StoreManager;
 use super::stream::SseBody;
 
+/// 请求 ID（由 `request_id_middleware` 注入），同时作为 `x-request-id` 下发
+#[derive(Clone)]
+pub(crate) struct RequestId(pub(crate) String);
+
+impl<S> FromRequestParts<S> for RequestId
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let id = parts
+            .extensions
+            .get::<RequestId>()
+            .map_or_else(next_request_id, |e| e.0.clone());
+        Ok(RequestId(id))
+    }
+}
+
 /// Extract the API key from request extensions (injected by api_key_middleware)
 pub(crate) struct ApiKey(pub(crate) Option<String>);
 
@@ -125,7 +144,8 @@ where
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn next_request_id() -> String {
+/// 生成 `req-{n}` 请求 ID（中间件与 handler 共用同一序列）
+pub(crate) fn next_request_id() -> String {
     format!("req-{:x}", REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
@@ -308,10 +328,10 @@ where
 pub(crate) async fn chat_completions(
     State(state): State<AppState>,
     ApiKey(api_key): ApiKey,
+    RequestId(request_id): RequestId,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
-    let request_id = next_request_id();
     let guard = idempotency_gate!(&state, &api_key, "/v1/chat/completions", &headers, &body);
     let timer = super::stats::RequestTimer::new(&state.stats);
     let timer_start = std::time::Instant::now();
@@ -435,10 +455,10 @@ pub(crate) async fn responses_get(
 pub(crate) async fn responses(
     State(state): State<AppState>,
     ApiKey(api_key): ApiKey,
+    RequestId(request_id): RequestId,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
-    let request_id = next_request_id();
     let guard = idempotency_gate!(&state, &api_key, "/v1/responses", &headers, &body);
     let timer = super::stats::RequestTimer::new(&state.stats);
     let timer_start = std::time::Instant::now();
@@ -586,10 +606,10 @@ pub(crate) async fn get_model(
 pub(crate) async fn anthropic_messages(
     State(state): State<AppState>,
     ApiKey(api_key): ApiKey,
+    RequestId(request_id): RequestId,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
-    let request_id = next_request_id();
     let timer = super::stats::RequestTimer::new(&state.stats);
     let timer_start = std::time::Instant::now();
 

@@ -87,10 +87,11 @@ src/
 │   ├── response.rs      # Response object builder + SSE event state machine
 │   └── store.rs         # Bounded + TTL cache backing previous_response_id
 │
-├── server.rs            # Facade: router, auth middleware, graceful shutdown
+├── server.rs            # Facade: router, request-id + auth middleware, graceful shutdown
 ├── server/              # HTTP server submodules
 │   ├── admin.rs         # Admin panel route handlers
 │   ├── auth.rs          # JWT sign/verify, password setup/login, rate limiter
+│   ├── idempotency.rs   # Idempotency-Key cache (bounded + 24h TTL) + SSE recorder
 │   ├── error.rs         # ServerError: OpenAI + Anthropic error envelopes
 │   ├── handlers.rs      # Business route handlers (OpenAI + Responses + Anthropic)
 │   ├── runtime_log.rs   # File log redirection (stdout → runtime.log)
@@ -213,6 +214,10 @@ Language switching lives in `LanguageSwitcher.tsx` / `UserDropdown.tsx`, theme s
 (system/light/dark) in `lib/theme.ts` + `ThemeSwitcher.tsx`.
 Library files include `api.ts`, `auth.tsx`, `auth-context.ts`, `use-auth.ts`, `theme.ts`, and `utils.ts`.
 Pages: `ConfigPage`, `DashboardPage`, `Layout`, `LoginPage`, `LogsPage`, `ModelsPage`, `SettingsPage`.
+
+**Route-level code splitting**: every page in `App.tsx` is loaded through `React.lazy`
+(`Suspense` fallback = skeleton rows), so the initial bundle only contains the shell + login page.
+Keep new pages lazy — the frontend build warns above 500KB per chunk.
 
 **Responsive + PWA**: the layout collapses to an icon rail on tablets and a bottom tab bar on
 mobile; `SplashScreen.tsx` covers initial hydration, and `public/sw.js` (registered from
@@ -382,6 +387,8 @@ Request fields mapped in `request/resolver.rs`:
   **derived per account** from this fingerprint (`pool::account_x_device_id`), and the
   `x-hif-leim` token cache is keyed by that device id (`hif::HifRegistry`) — one device
   identity and one risk token per account, matching the real client.
+- **`n` parameter**: OpenAI requires `n >= 1`; `n=0` and `n>1` are rejected with `400`
+  (`request/normalize.rs`) because upstream only ever produces a single candidate.
 - **Hourly request quota** (`hourly_request_quota`, default 60, 0 = unlimited): enforced
   per account in `AccountPool::get_account()` via a one-hour **sliding window**
   (`SlidingWindowRateLimiter` in `ds_core/src/accounts/pool.rs`; PR #114 replaced the
@@ -447,11 +454,30 @@ All errors use `thiserror` derive macro.
 
 ### Request Tracing & Account Header
 
-Each request gets a `req-{n}` ID at the handler level, threaded through adapter → `ds_core`. Key log points carry `req=` for cross-layer tracing:
+The outermost middleware (`request_id_middleware` in `server.rs`) mints a `req-{n}` ID per
+request, stores it in request extensions and echoes it as the `x-request-id` response header —
+including on middleware-generated errors (401), so clients can quote an ID that exists in the logs.
+Handlers read it back via the `RequestId` extractor (`handlers.rs`) and thread it through the
+adapter → `ds_core`. Key log points carry `req=` for cross-layer tracing:
 ```bash
 RUST_LOG=debug 2>&1 | grep 'req=req-1'
 ```
 The `x-ds-account` HTTP response header carries the account identifier upstream.
+
+### Idempotent Retries (`Idempotency-Key`)
+
+`server/idempotency.rs` implements the Stripe/OpenAI convention for the three POST endpoints
+(`/v1/chat/completions`, `/v1/responses`, `/anthropic/v1/messages`):
+
+- scope is `(API key, method+path, Idempotency-Key)`; a differing request body under the same key
+  returns `400 idempotency_error` (fingerprint via `DefaultHasher`, process-local only);
+- an entry still `InFlight` → `409`; a completed entry is replayed **byte-for-byte**
+  (status + `Content-Type` + body) with `idempotent-replayed: true`;
+- streaming responses are recorded chunk by chunk (`RecordingStream`); a client disconnect or a
+  body over 1MB voids the entry so a retry really re-runs instead of replaying a truncated answer;
+- the store is in-process, bounded (1024 entries / 1MB per entry / 64MB total) with a 24h TTL and
+  is never persisted. **Without the header, behaviour is exactly as before** — that property is
+  what keeps the feature safe to ship without new config.
 
 ### HTTP Routes
 
@@ -470,7 +496,8 @@ The `x-ds-account` HTTP response header carries the account identifier upstream.
 
 Bearer auth is **always enforced** on `/v1/*` and `/anthropic/*` via `[[api_keys]]`.
 If `api_keys` is empty no token can validate, so every API request returns
-`401 invalid_api_token` — create a key in the admin panel (or `[[api_keys]]`) first.
+`401 invalid_api_key` (`type: invalid_request_error`, matching OpenAI's own 401 body) —
+create a key in the admin panel (or `[[api_keys]]`) first.
 
 Two credential headers are accepted:
 - `Authorization: Bearer <key>` — OpenAI SDK, and the Anthropic SDK's `authToken`
@@ -557,6 +584,15 @@ Follow `docs/code-style.md`:
 - Do **NOT** use untargeted log macros — always specify `target: "..."`
 - Do **NOT** access `ds_core` directly from `anthropic_compat` — always go through `OpenAIAdapter`
 - Do **NOT** use `#[allow(...)]` in any file except `ds_core/src/accounts/client.rs` — dead API methods and deserialized fields for API symmetry are expected only in the raw HTTP client layer. New lint exemptions in other files must be resolved (refactor or consume the value) rather than suppressed.
+- The workspace lint set in `Cargo.toml` is intentionally **strict** (rustc: `trivial_casts`,
+  `elided_lifetimes_in_paths`, `let_underscore_drop`, `unused_lifetimes`, …; clippy:
+  `needless_pass_by_value`, `assigning_clones`, `map_unwrap_or`, `format_push_string`,
+  `cast_possible_truncation`, `cast_possible_wrap`, `cast_precision_loss`,
+  `unchecked_time_subtraction`, `branches_sharing_code`, `significant_drop_tightening`,
+  `items_after_statements`, `uninlined_format_args`, `missing_const_for_fn`, `unused_async`, …).
+  These are chosen for signal: float→int saturation, timestamp wraparound, locks held across
+  `await`, and needless allocations are all caught. When a new lint fires, fix the code; do not
+  weaken the list without stating the reason in the commit message.
 - Do **NOT** keep admin/auth config in separate JSON files (`admin.json`, `api_keys.json`) — they are merged into `Config` fields and persisted via `Config::save()` into `config.toml`
 - Do **NOT** run `git checkout`, `git commit`, or `gh` commands without explicit user permission — always ask before destructive or persistent operations
 ---
@@ -606,7 +642,8 @@ Follow `docs/code-style.md`:
 | Anthropic aggregate response | `src/anthropic_compat/response/aggregate.rs` | OpenAI JSON → Anthropic JSON |
 | OpenAI protocol types | `src/openai_adapter/types.rs` | Request/response structs, `#![allow(dead_code)]` |
 | Model listing | `src/openai_adapter/models.rs` | Model registry and listing |
-| HTTP server/routes | `src/server/` | handlers → stream → error |
+| HTTP server/routes | `src/server/` | handlers → stream → error; `request_id_middleware` mints `req-{n}` + `x-request-id` |
+| Idempotency cache | `src/server/idempotency.rs` | `Idempotency-Key` scope/conflict/replay rules + `RecordingStream` for SSE replay |
 | PoW WASM solver | `ds_core/src/accounts/pow.rs` | wasmtime loading, dynamic export probing, DeepSeekHashV1 |
 | DeepSeek HTTP client | `ds_core/src/accounts/client.rs` | `Envelope::into_result()`, WAF detection, all API methods |
 | HIF risk-control token | `ds_core/src/accounts/hif.rs` | `x-hif-leim`: polled from `hif-leim.deepseek.com/query` (no auth), TTL from `x-hif-ttl`, attached to SSE requests only. Missing it marks the request as a non-official client — see `docs/development.md` (2026-10-07) |
@@ -626,6 +663,7 @@ Follow `docs/code-style.md`:
 | Outdated wrapper | `scripts/check-outdated.sh` | `cargo outdated` fails to resolve because wreq 5.x is yanked; script skips only that known case |
 | Lint exemption gate | `scripts/check-lint-exemptions.sh` | Enforces the "no `#[allow]` outside client.rs" rule in CI |
 | i18n key-set gate | `web/scripts/check-locales.mjs` | Fails CI when the three locale files diverge |
+| Frontend config parity gate | `web/scripts/check-config-parity.mjs` | Every field in `config.example.toml` must appear somewhere under `web/src` (or be listed in `web/scripts/config-parity-allowlist.txt` with a reason). Guards the "backend adds a field, admin panel writes it back empty" class of bug |
 | Config example drift gate | `scripts/check-config-drift.sh` | Root and `docker/` config examples must stay identical except `host` |
 | Config example (authoritative) | `config.example.toml` + `docker/config.example.toml` | Both must document every config field; the docker copy differs only in `host` |
 | Responses e2e | `py-e2e-tests/test_responses.py` | `just e2e-responses` — streaming, tools, `previous_response_id`, error envelopes |
