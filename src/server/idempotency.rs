@@ -118,41 +118,44 @@ impl IdempotencyStore {
         fingerprint: u64,
     ) -> Result<Begin, ServerError> {
         let cache_key = format!("{scope}\u{1}{key}");
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.evict_expired();
 
-        let existing = inner.entries.get(&cache_key).cloned();
-        drop(inner);
-
-        if let Some(entry) = existing {
-            if entry.fingerprint != fingerprint {
-                return Err(ServerError::IdempotencyConflict);
-            }
-            let state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
-            return Ok(match &*state {
-                EntryState::InFlight => Begin::InProgress,
-                EntryState::Completed(r) => Begin::Replay(r.clone()),
-                EntryState::Unreplayable => Begin::Unreplayable,
-            });
-        }
-
-        let entry = Arc::new(Entry {
-            fingerprint,
-            created: Instant::now(),
-            state: Mutex::new(EntryState::InFlight),
-        });
-        {
+        // 查找与占位必须在**同一次持锁**内完成：否则两个并发的同键请求
+        // 都会看到「不存在」并各自打到上游，幂等保护就失效了。
+        let entry = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.entries.insert(cache_key.clone(), entry.clone());
-            inner.order.push_back(cache_key.clone());
-            inner.evict_overflow();
+            inner.evict_expired();
+            if let Some(existing) = inner.entries.get(&cache_key).cloned() {
+                existing
+            } else {
+                let entry = Arc::new(Entry {
+                    fingerprint,
+                    created: Instant::now(),
+                    state: Mutex::new(EntryState::InFlight),
+                });
+                inner.entries.insert(cache_key.clone(), entry.clone());
+                inner.order.push_back(cache_key.clone());
+                inner.evict_overflow();
+                drop(inner);
+                // 占位成功即首次执行；这里直接返回，避免再读一次状态
+                return Ok(Begin::Fresh(IdempotencyGuard {
+                    store: Arc::clone(self),
+                    cache_key,
+                    entry,
+                    finished: false,
+                }));
+            }
+        };
+
+        // 已有条目：在缓存锁之外读取状态（锁顺序固定为 map → entry）
+        if entry.fingerprint != fingerprint {
+            return Err(ServerError::IdempotencyConflict);
         }
-        Ok(Begin::Fresh(IdempotencyGuard {
-            store: Arc::clone(self),
-            cache_key,
-            entry,
-            finished: false,
-        }))
+        let state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(match &*state {
+            EntryState::InFlight => Begin::InProgress,
+            EntryState::Completed(r) => Begin::Replay(r.clone()),
+            EntryState::Unreplayable => Begin::Unreplayable,
+        })
     }
 
     fn commit(&self, cache_key: &str, entry: &Arc<Entry>, recorded: RecordedResponse) {
