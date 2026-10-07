@@ -15,8 +15,17 @@ use crate::accounts::{Accounts, StopStreamPayload};
 use crate::config::DsCoreConfig;
 use response::ActiveSession;
 
-pub use request::{ChatRequest, ChatResponse, FilePayload};
+pub use request::{ChatRequest, ChatResponse, DeltaPrompt, FilePayload};
 pub use response::StreamEvent;
+
+/// 一次请求的会话决策
+struct SessionPlan {
+    session_id: String,
+    /// 是否为**增量复用**（true = 沿用缓存会话，只发新增消息）
+    reuse: bool,
+    /// 增量发送时的 `parent_message_id`（上游上一条响应的消息 id）
+    parent_message_id: Option<i64>,
+}
 
 /// 对话模块的统一入口
 ///
@@ -42,26 +51,38 @@ impl Chat {
         }
     }
 
-    /// 取得本次请求使用的会话
+    /// 本次请求的会话决策
     ///
-    /// `session_reuse = true` 时优先复用账号上缓存的会话（返回 `reused = true`），
-    /// 否则新建（返回 `false`，由调用方用 `SessionGuard` 负责异常路径的删除）。
+    /// `reuse = true` 表示沿用账号上缓存的会话做**增量发送**：
+    /// 只把新增的那条用户消息发上去（`parent_message_id` 指向上一轮响应），
+    /// 由上游自己组装上下文 —— 与官方客户端一致（见 `docs/development.md`）。
     async fn acquire_session(
         &self,
         account: &crate::accounts::Account,
-    ) -> Result<(String, bool), crate::CoreError> {
+        delta: Option<&request::DeltaPrompt>,
+    ) -> Result<SessionPlan, crate::CoreError> {
         if self.session_reuse
-            && let Some(session_id) = account.cached_session_id()
+            && let Some(delta) = delta
+            && let Some((session_id, parent)) = account.cached_session_for(&delta.chain)
         {
             log::debug!(
                 target: "ds_core::accounts",
-                "复用会话: account={}, session={session_id}",
-                account.display_id()
+                "增量复用会话: account={}, session={session_id}, parent={parent}, known={}",
+                account.display_id(),
+                delta.chain.len()
             );
-            return Ok((session_id, true));
+            return Ok(SessionPlan {
+                session_id,
+                reuse: true,
+                parent_message_id: Some(parent),
+            });
         }
         let session_id = self.accounts.create_session(account).await?;
-        Ok((session_id, false))
+        Ok(SessionPlan {
+            session_id,
+            reuse: false,
+            parent_message_id: None,
+        })
     }
 
     /// 获取指定 model_type 的 input_character_limit

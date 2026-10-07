@@ -768,25 +768,41 @@ UA / `client_platform` / `client_os` 切成 web，则应同时设 `emulation = "
 | `client_platform` / `client_os` | `android` | `web` | 同上 |
 | completion payload | 无 `source` | `source = "input"` | 前端 bundle：官方一定带该字段 |
 
-### 仍然存在的最大差异（prompt 形态）
+### prompt 形态对齐（delta 发送，已实现）
 
 前端 bundle（`main.*.js`，1.4 MB）里**没有任何** `<｜Role｜>` 之类的原生标签字面量，
-唯一一处 `｜` 出现在标点正则里。结合「完成请求体只带 `prompt` + `parent_message_id`」，
-可以推断：**官方客户端只把最新一条用户消息放进 `prompt`，历史由服务端按会话组装**。
+唯一一处 `｜` 出现在标点正则里；完成请求体也只带 `prompt` + `parent_message_id`。
+结论：**官方客户端只把最新一条用户消息放进 `prompt`，历史由服务端按会话组装**。
 
-而本代理为了让每轮请求自成一体，会把整段历史内联进 `prompt`（`<｜User｜>` /
-`<｜Assistant｜>` / 工具输出标签等）。这是 prompt 层面最大的一处不同，也是
-「若违规判定涉及 prompt 形态」时最可能的暴露点。
+现在 `session_policy = reuse` 且请求为纯对话形态时，本代理也只发送新增的那条用户消息
+（零标签），`parent_message_id` 指向上一轮响应；命中条件是消息指纹链的**严格前缀匹配**
+（只差 1~2 条）。带工具 / 工具消息 / 文件 / HTTP URL / `response_format` 的请求不参与增量，
+仍走「新建会话 + 完整 prompt」，工具协议行为不变。
 
-**对齐方案（尚未实现，需先确认真实账号下上游对「同一会话 + parent_message_id」的语义）**：
+#### 验证方式：本地假上游（**零账号流量**）
 
-1. 复用会话（`session_policy = reuse`）时，记录上游返回的 `response_message_id`；
-2. 下一轮只发送**新增的用户消息**作为 `prompt`，并把 `parent_message_id` 指向上一条响应，
-   让上游自己组装上下文（与官方一致）；
-3. 当收到的对话不是上一轮的延续（例如换客户端、历史被改写）时，退化为「新建会话 +
-   内联历史」，保证正确性；
-4. 该改动会改变 adapter ↔ ds_core 的接口（需要把结构化消息而不是渲染好的 prompt 传下去），
-   属于较大改动，且**必须用干净账号验证**后才能设为默认。
+`/home/dsh/tmp/delta_verify/mock_upstream.py` 起一个假 DeepSeek 后端
+（登录 / 建会话 / PoW / completion SSE 全模拟），把 `api_base` 指过去后跑真实二进制，
+记录每次 `/chat/completion` 的请求体：
+
+| 用例 | session | `parent_message_id` | `prompt` | 结论 |
+|------|---------|---------------------|----------|------|
+| 第 1 轮（单条 user） | `mock-session-1` **新建** | 缺省 | 46 字符、**3 个 `<｜` 标签**、含历史 | 基线 |
+| 第 2 轮（延续同一会话） | `mock-session-1` **复用** | `1001`（上轮响应 id） | **5 字符「第二轮问题」、0 标签** | ✅ 对齐官方客户端 |
+| 带 `tools` 的请求 | `mock-session-2` 新建 | 缺省 | 1357 字符、4 标签（工具脚手架） | ✅ 工具协议不受影响 |
+| 完全重复上一轮的请求 | `mock-session-3` 新建 | 缺省 | 93 字符、6 标签 | ✅ 不重复灌历史 |
+
+> **这次验证抓到一个真实缺陷**：会话是否需要保留，最初写成了「本轮是否复用了会话」
+> （`reuse && finished`），于是**第一个新建的会话永远不会被缓存**，复用也就永远不会发生。
+> 已改为按**策略**判断（`keep_on_finish = session_policy == "reuse"` + 链非空）。
+
+> **PoW 的额外发现**：假上游最初伪造 `challenge`，wasm 永远返回
+> `no solution` —— 实测同一个 difficulty（144000）下，真实抓包的 challenge 94 ms 解出
+> （answer=107544），伪造的跑满预算也无解。即 `challenge` 与 `salt`/`expire_at` 之间存在
+> 可验证关系，**不能凭空造**；假上游只能复用真实样例（wasm 不校验 `expire_at` 过期）。
+
+**仍未验证的部分**：真实上游对「同一会话 + `parent_message_id` + 只发新增消息」的语义
+（例如服务端是否会因为客户端不回传完整历史而拒绝、以及上下文是否真的按会话累积）。
 
 ---
 

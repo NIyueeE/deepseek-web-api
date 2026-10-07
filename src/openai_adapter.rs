@@ -180,12 +180,20 @@ impl OpenAIAdapter {
         });
 
         let file_result = request::files::extract(&req);
+        // 纯对话形态下提供增量信息：会话复用时只发新增的那条用户消息（对齐官方客户端）
+        let delta = request::delta::build(
+            &req,
+            &tool_ctx,
+            !file_result.files.is_empty(),
+            file_result.has_http_urls,
+        );
         let chat_req = ds_core::ChatRequest {
             prompt,
             thinking_enabled: model_res.thinking_enabled,
             search_enabled: model_res.search_enabled || file_result.has_http_urls,
             model_type: model_res.model_type,
             files: file_result.files,
+            delta,
         };
 
         let chat_resp = self.try_chat(chat_req, request_id).await?;
@@ -335,6 +343,7 @@ impl OpenAIAdapter {
             search_enabled: model_res.search_enabled,
             model_type: model_res.model_type,
             files: vec![],
+            delta: None,
         };
         let chat_resp = self.try_chat(ds_req, request_id).await?;
         let (account_id, event_stream) = Self::take_meta(chat_resp.stream).await?;
@@ -583,6 +592,7 @@ impl OpenAIAdapter {
                     search_enabled: false,
                     model_type: "default".to_string(),
                     files: vec![],
+                    delta: None,
                 };
                 log::debug!(
                     target: "adapter",

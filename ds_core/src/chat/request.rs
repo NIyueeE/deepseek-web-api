@@ -123,6 +123,8 @@ impl Drop for ReuseGuard {
     }
 }
 
+use super::SessionPlan;
+
 // ── 公开类型 ──────────────────────────────────────────────────────────
 
 /// 文件载荷
@@ -136,11 +138,27 @@ pub struct FilePayload {
 /// 对话请求
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
+    /// 完整 prompt（新建会话时发送；含角色标签与历史）
     pub prompt: String,
     pub thinking_enabled: bool,
     pub search_enabled: bool,
     pub model_type: String,
     pub files: Vec<FilePayload>,
+    /// 增量发送信息（`session_policy = reuse` 且请求形态匹配官方客户端时提供）
+    ///
+    /// 官方客户端只把**最新一条用户消息**放进 `prompt`，历史由服务端按会话组装；
+    /// 提供该字段后，本代理在命中同一会话时可照此增量发送，避免把整段历史
+    /// （连同 `<｜Role｜>` 标签）反复塞进 prompt。
+    pub delta: Option<DeltaPrompt>,
+}
+
+/// 增量 prompt：会话复用时只发新增内容
+#[derive(Debug, Clone)]
+pub struct DeltaPrompt {
+    /// 本次请求消息序列的累积指纹链（第 i 项 = 前 i+1 条消息的哈希）
+    pub chain: Vec<u64>,
+    /// 命中缓存会话时应当发送的文本（最新一条用户消息原文，**无任何角色标签**）
+    pub text: String,
 }
 
 /// v0_chat 返回值：精简协议事件流
@@ -280,14 +298,22 @@ impl Chat {
             "req={request_id} 分块写入: model_type=expert, account={account_id}"
         );
 
-        // 2. 取 session（所有 chunk 共享；复用模式下沿用账号缓存的会话）
-        let (session_id, reused) = match self.acquire_session(&account).await {
+        // 2. 取 session（所有 chunk 共享）
+        //
+        // 分块路径**不做增量复用**：它需要按块把 prompt 逐条写进同一个会话，
+        // 与「官方客户端只发一条新消息」的形态无关（传 None = 不使用缓存会话）。
+        let plan = match self.acquire_session(&account, None).await {
             Ok(v) => v,
             Err(e) => {
                 self.accounts.mark_error(&account_id);
                 return Err(e);
             }
         };
+        let SessionPlan {
+            session_id,
+            reuse: reused,
+            ..
+        } = plan;
         // 新建的会话由 SessionGuard 兜底删除；复用的会话由 ReuseGuard 在失败时失效
         let mut session_guard =
             (!reused).then(|| SessionGuard::new(account.client(), &token, &session_id));
@@ -539,8 +565,10 @@ impl Chat {
                     session_id,
                     message_id: stop_id,
                     sessions: self.active_sessions.clone(),
-                    reuse: reused,
                     account: Some(account),
+                    keep_on_finish: self.session_reuse,
+                    // 分块路径不参与增量复用（见上面的 acquire_session(None)）
+                    chain: Vec::new(),
                 },
                 account_id.clone(),
             )),
@@ -580,14 +608,24 @@ impl Chat {
             request_id, req.model_type, account_id
         );
 
-        // 2. 取会话：复用模式下优先用账号上缓存的会话（真实客户端一个会话多发）
+        // 2. 取会话：复用模式下命中同一会话时做增量发送（对齐官方客户端）
         let session_start = Instant::now();
-        let (session_id, reused) = match self.acquire_session(&account).await {
+        let plan = match self.acquire_session(&account, req.delta.as_ref()).await {
             Ok(v) => v,
             Err(e) => {
                 self.accounts.mark_error(&account_id);
                 return Err(e);
             }
+        };
+        let SessionPlan {
+            session_id,
+            reuse: reused,
+            parent_message_id: reuse_parent,
+        } = plan;
+        // 增量命中：prompt 只发新增的那条用户消息（无标签）
+        let delta_prompt = match (reused, req.delta.as_ref()) {
+            (true, Some(delta)) => Some(delta.text.as_str()),
+            _ => None,
         };
         let session_create_ms = session_start.elapsed().as_millis();
         // 新建的会话由 SessionGuard 兜底删除；复用的会话由 ReuseGuard 在失败时失效
@@ -669,15 +707,18 @@ impl Chat {
         let pow_ms = pow_start.elapsed().as_millis();
 
         // 5. 发起 completion
-        let completion_prompt: &str = if history_upload_failed {
-            &req.prompt
-        } else {
-            inline_prompt
+        //
+        // 增量复用命中时只发新增的用户消息（`delta_prompt`）：上游会话里已有
+        // 完整历史，`parent_message_id` 指向上一条响应即可 —— 与官方客户端一致。
+        let completion_prompt: &str = match delta_prompt {
+            Some(delta) => delta,
+            None if history_upload_failed => &req.prompt,
+            None => inline_prompt,
         };
 
         let payload = CompletionPayload {
             chat_session_id: session_id.clone(),
-            parent_message_id: None,
+            parent_message_id: reuse_parent,
             model_type: req.model_type.clone(),
             prompt: completion_prompt.to_string(),
             ref_file_ids,
@@ -826,8 +867,12 @@ impl Chat {
                     session_id,
                     message_id: stop_id,
                     sessions: self.active_sessions.clone(),
-                    reuse: reused,
                     account: Some(account),
+                    keep_on_finish: self.session_reuse,
+                    chain: req
+                        .delta
+                        .as_ref()
+                        .map_or_else(Vec::new, |d| d.chain.clone()),
                 },
                 account_id.clone(),
             )),

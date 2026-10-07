@@ -286,7 +286,7 @@ fn format_function(msg: &Message) -> String {
     parts.join("\n")
 }
 
-fn format_content(content: &MessageContent) -> String {
+pub(crate) fn format_content(content: &MessageContent) -> String {
     match content {
         MessageContent::Text(text) => text.clone(),
         MessageContent::Parts(parts) => {

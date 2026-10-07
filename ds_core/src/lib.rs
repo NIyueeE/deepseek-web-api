@@ -12,7 +12,7 @@ pub use accounts::{
     ChatSessionInfo, ClientIdentity, DsClient, EmulationProfile, FetchSessionsData, HifConfig,
     LoginPayload,
 };
-pub use chat::{ChatRequest, ChatResponse, FilePayload, StreamEvent};
+pub use chat::{ChatRequest, ChatResponse, DeltaPrompt, FilePayload, StreamEvent};
 pub use config::{AccountConfig, DsCoreConfig};
 
 use accounts::Accounts;

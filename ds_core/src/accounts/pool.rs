@@ -134,6 +134,13 @@ pub struct Account {
 struct CachedSession {
     id: String,
     last_used: Instant,
+    /// 上游该会话当前已知的消息指纹链（`DeltaPrompt::chain` 的快照）
+    ///
+    /// 下一次请求只有在「自己的链以它开头」时才允许增量发送 —— 这保证
+    /// 上游会话里的上下文与客户端发来的历史严格一致。
+    chain: Vec<u64>,
+    /// 该会话上一条响应的消息 id（作为下一轮的 `parent_message_id`）
+    last_message_id: i64,
 }
 
 /// 连续登录失败上限，达到后标记为 Invalid
@@ -268,22 +275,39 @@ impl SlidingWindowRateLimiter {
 }
 
 impl Account {
-    /// 当前缓存的会话 ID（`session_reuse` 模式下复用）
-    pub(crate) fn cached_session_id(&self) -> Option<String> {
-        self.session
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|c| c.id.clone())
-    }
-
     /// 记下可复用的会话（流正常结束后调用）
-    pub(crate) fn put_cached_session(&self, session_id: &str) {
+    pub(crate) fn put_cached_session(
+        &self,
+        session_id: &str,
+        chain: Vec<u64>,
+        last_message_id: i64,
+    ) {
         let mut slot = self.session.lock().unwrap_or_else(|e| e.into_inner());
         *slot = Some(CachedSession {
             id: session_id.to_string(),
             last_used: Instant::now(),
+            chain,
+            last_message_id,
         });
+    }
+
+    /// 取可用于**增量发送**的会话
+    ///
+    /// 命中条件：缓存会话的消息链是本请求链的**严格前缀**，且只差 1~2 条消息
+    /// （官方客户端的形态：`[…已有历史] + 自己的上一条回复 + 新的用户消息`）。
+    /// 命中时顺带刷新 `last_used`，避免刚用过的会话被回收任务删掉。
+    pub(crate) fn cached_session_for(&self, chain: &[u64]) -> Option<(String, i64)> {
+        let mut slot = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        let cached = slot.as_mut()?;
+        let known = cached.chain.len();
+        let extra = chain.len().checked_sub(known)?;
+        if !(1..=2).contains(&extra) || chain[..known] != cached.chain[..] {
+            return None;
+        }
+        cached.last_used = Instant::now();
+        let hit = (cached.id.clone(), cached.last_message_id);
+        drop(slot);
+        Some(hit)
     }
 
     /// 清掉缓存的会话（仅在 ID 匹配时，避免误删新会话）
@@ -1307,24 +1331,30 @@ mod tests {
     #[test]
     fn cached_session_slot_roundtrip() {
         let account = idle_account("cache@example.com");
-        assert!(account.cached_session_id().is_none(), "初始应为空");
+        assert!(
+            account.cached_session_for(&[1, 2, 3]).is_none(),
+            "初始应为空"
+        );
 
-        account.put_cached_session("s-1");
-        assert_eq!(account.cached_session_id().as_deref(), Some("s-1"));
+        account.put_cached_session("s-1", vec![1, 2], 42);
+        assert_eq!(
+            account.cached_session_for(&[1, 2, 9]),
+            Some(("s-1".to_string(), 42))
+        );
 
         // 不匹配的 ID 不得误删
         account.clear_cached_session("s-other");
-        assert_eq!(account.cached_session_id().as_deref(), Some("s-1"));
+        assert!(account.cached_session_for(&[1, 2, 9]).is_some());
 
         account.clear_cached_session("s-1");
-        assert!(account.cached_session_id().is_none());
+        assert!(account.cached_session_for(&[1, 2, 9]).is_none());
     }
 
     /// 空闲回收：未超时不动，超时取出；`None` 表示无条件回收
     #[test]
     fn reapable_session_respects_idle_window() {
         let account = idle_account("idle@example.com");
-        account.put_cached_session("s-2");
+        account.put_cached_session("s-2", vec![7], 9);
 
         assert!(
             account
@@ -1337,7 +1367,36 @@ mod tests {
             Some("s-2"),
             "退出时应无条件回收"
         );
-        assert!(account.cached_session_id().is_none(), "回收后槽位应清空");
+        assert!(
+            account.cached_session_for(&[1]).is_none(),
+            "回收后槽位应清空"
+        );
+    }
+
+    /// 增量匹配：链前缀一致且只多 1~2 条才算命中
+    #[test]
+    fn cached_session_matches_only_real_continuations() {
+        let account = idle_account("delta@example.com");
+        account.put_cached_session("s-9", vec![10, 20], 77);
+
+        // 多一条（客户端只回传新用户消息）→ 命中
+        assert_eq!(
+            account.cached_session_for(&[10, 20, 30]),
+            Some(("s-9".to_string(), 77))
+        );
+        // 多两条（回传自己的回复 + 新用户消息，官方客户端形态）→ 命中
+        assert_eq!(
+            account.cached_session_for(&[10, 20, 31, 30]),
+            Some(("s-9".to_string(), 77))
+        );
+        // 前缀不一致（历史被改写 / 换客户端）→ 不命中
+        assert_eq!(account.cached_session_for(&[10, 99, 30]), None);
+        // 完全相同的链（同一请求重放）→ 不命中，避免把重复内容再发一次
+        assert_eq!(account.cached_session_for(&[10, 20]), None);
+        // 多出三条以上（客户端跳过了一轮）→ 不命中
+        assert_eq!(account.cached_session_for(&[10, 20, 1, 2, 3]), None);
+        // 比缓存还短 → 不命中
+        assert_eq!(account.cached_session_for(&[10]), None);
     }
 
     /// 会话策略默认关闭复用，且 `with_session_reuse` 只改策略相关字段

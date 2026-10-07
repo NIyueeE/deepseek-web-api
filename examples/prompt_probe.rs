@@ -84,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
             search_enabled: false,
             model_type: model_type.clone(),
             files: vec![],
+            delta: None,
         };
 
         let start = Instant::now();

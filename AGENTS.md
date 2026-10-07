@@ -432,9 +432,18 @@ Request fields mapped in `request/resolver.rs`:
   (the official client reuses a single session indefinitely). Sessions are returned on normal
   stream end, invalidated on any request failure (`ReuseGuard`), reaped when idle for
   `session_idle_secs` (0 = only at shutdown) and unconditionally on `DsCore::shutdown`.
-  The upstream semantics of reuse (continuing with `parent_message_id = null`) are **not yet
-  verified with a real account** — it is the default because it matches the official client,
-  not because it has been proven safe.
+- **Delta prompt** (part of `reuse`): the official client puts **only the newest user message**
+  into `prompt` and lets the server assemble context from the session (`parent_message_id`);
+  the frontend bundle contains no `<｜Role｜>` tag literals at all. So the adapter
+  (`openai_adapter/request/delta.rs`) attaches a `DeltaPrompt { chain, text }` for **plain chat
+  only** — no tools / tool messages / files / HTTP URLs / `response_format` — where `text` is
+  the raw new user message and `chain` is a cumulative per-message fingerprint. `ds_core` reuses
+  the cached session only when the stored chain is a strict prefix of `chain` (differing by 1–2
+  messages, i.e. `[…history] + own last reply + new user message`), then sends `text` with
+  `parent_message_id` = the previous response id. Any mismatch (edited history, replay, tools,
+  chunked path) falls back to **new session + full inline prompt**. Verified against a local mock
+  upstream (exact payload table in `docs/development.md`); not yet verified against the real
+  upstream.
 
 ### Overloaded Retry
 

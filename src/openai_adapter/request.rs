@@ -4,6 +4,7 @@
 //! - 多轮对话通过 DeepSeek 原生标签格式压缩为单个 prompt 字符串
 //! - tool 定义嵌入到最后一个 `<｜Assistant｜>` 后的不闭合 `<think>` 块中
 
+pub(crate) mod delta;
 pub(crate) mod files;
 pub(crate) mod normalize;
 pub(crate) mod prompt;

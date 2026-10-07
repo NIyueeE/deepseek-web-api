@@ -33,10 +33,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `client_os = "android"`、`startup_health_check = true`、
   `session_policy = "per_request"`、`default_search_enabled = true`
 
-**仍存在的差异（下一步候选，尚未实现）**：官方客户端只把**最新一条用户消息**放进
-`prompt`（历史在服务端会话里，靠 `parent_message_id` 串联），而本代理仍把整段历史
-内联进 prompt（含 `<｜Role｜>` 原生标签）。前端 bundle 里**完全没有**这类标签字面量 ——
-若违规判定涉及 prompt 形态，这是最大的一处不同。
+- **prompt 形态对齐（delta 发送）**：官方客户端只把**最新一条用户消息**放进 `prompt`
+  （历史在服务端会话里，靠 `parent_message_id` 串联），前端 bundle 里没有任何
+  `<｜Role｜>` 标签字面量。现在 `session_policy = reuse` 且请求是纯对话形态时，本代理
+  也只发送新增的那条用户消息（**零角色标签**），`parent_message_id` 指向上一条响应：
+  - 仅在「消息指纹链严格前缀匹配、只差 1~2 条」时命中，命中才增量发送；
+  - 带工具 / 工具消息 / 文件 / HTTP URL / `response_format` 的请求**不参与**增量，
+    继续用「新建会话 + 完整 prompt」，工具协议的行为完全不变；
+  - 链不匹配（历史被改写、同一请求重放、跨客户端）也回退到新建会话，避免把历史重复灌进
+    已有会话；
+  - 已在**本地假上游**上逐字段验证（新建→复用→工具→重放四个用例，见
+    `docs/development.md`），尚未用真实账号验证。
 
 ### 风控对齐（新增，**默认行为不变**，仅用于对照实验）
 

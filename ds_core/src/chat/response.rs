@@ -55,10 +55,12 @@ pub(crate) struct SessionHandle {
     pub(crate) session_id: String,
     pub(crate) message_id: i64,
     pub(crate) sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
-    /// 本次会话是否**复用**自账号缓存（true = 正常结束后归还而不是删除）
-    pub(crate) reuse: bool,
     /// 复用会话所属账号（归还 / 失效时使用）
     pub(crate) account: Option<Arc<crate::accounts::Account>>,
+    /// 本次请求的消息指纹链（归还时写入会话槽，供下一轮做增量匹配）
+    pub(crate) chain: Vec<u64>,
+    /// 是否按配置把正常结束的会话留在账号上（`session_policy = reuse`）
+    pub(crate) keep_on_finish: bool,
 }
 
 impl SessionHandle {
@@ -69,10 +71,14 @@ impl SessionHandle {
         let token = self.token.clone();
         let session_id = self.session_id.clone();
         let message_id = self.message_id;
-        // 只有「正常结束 + 复用模式」才把会话留在账号上；
+        // 「正常结束 + 会话复用策略开启 + 本次带增量链」才把会话留在账号上：
+        // 注意判断依据是**策略**而不是「本轮是否复用了会话」—— 正是本轮新建的会话
+        // 才需要被缓存下来供下一轮复用（否则复用永远不会发生）。
         // 客户端中断（!finished）时会话状态不明，按原逻辑删除更安全。
-        let keep = self.reuse && finished;
+        let keep = self.keep_on_finish && finished && !self.chain.is_empty();
         let account = self.account.clone();
+        let chain = self.chain.clone();
+        let last_message_id = self.message_id;
 
         tokio::spawn(async move {
             if !finished {
@@ -86,7 +92,7 @@ impl SessionHandle {
             }
             if keep {
                 if let Some(account) = account {
-                    account.put_cached_session(&session_id);
+                    account.put_cached_session(&session_id, chain, last_message_id);
                     log::info!(
                         target: "ds_core::accounts",
                         "session_kept: id={session_id}, cleanup_ms={}",

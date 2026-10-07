@@ -248,8 +248,8 @@ maxBackoffMs = 1000 * getFrozenFeature("hif_max_retry_interval_secs", 600);
   代理侧统一填 `input`（真实用户最常态的路径）。
 - **`prompt`**：**只包含最新一条用户消息的文本**。历史不在 prompt 里 ——
   它保存在服务端会话中，靠 `parent_message_id` 串联（前端 bundle 中**没有任何**
-  `<｜Role｜>` 之类标签字面量）。本代理为了让每轮请求自成一体会把历史内联进 prompt，
-  这是 prompt 层面与真实客户端最大的一处不同（详见 `docs/development.md`）。
+  `<｜Role｜>` 之类标签字面量）。本代理在 `session_policy = reuse` 且纯对话形态下也已
+  按此增量发送（见 `docs/development.md` 的验证表）；带工具 / 文件 / 搜索时仍内联历史。
 
 ---
 
@@ -340,6 +340,10 @@ maxBackoffMs = 1000 * getFrozenFeature("hif_max_retry_interval_secs", 600);
 - 关键字段: `challenge`（哈希输入前缀）、`salt`（拼接用）、`difficulty`（目标阈值）、`expire_at`（过期时间戳 ms）
 - `algorithm`: 固定 `"DeepSeekHashV1"`
 - `expire_after`: 300000ms = 5 分钟有效期
+- ⚠️ **challenge 不能凭空伪造**（2026-10-07 实测）：`challenge` 与 `salt`/`expire_at`
+  之间存在可验证关系 —— 同一个 difficulty（144000）下，真实抓包的 challenge 94ms 解出
+  （answer=107544），伪造 challenge 跑满搜索预算仍返回 no solution。因此本地假上游
+  只能复用真实样例（wasm 不校验 `expire_at` 是否过期）。
 
 ---
 
