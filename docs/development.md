@@ -741,6 +741,7 @@ UA / `client_platform` / `client_os` 切成 web，则应同时设 `emulation = "
 | 启动阶段 | 登录 → `check_device` → `GET /chat_session/fetch_page` → **建一个会话，不发消息** | 登录 → `check_device` → 建会话 → **发一条 completion**（health_check）→ 删会话 | 启动即产生 completion，真实客户端不存在这一步 |
 | 会话生命周期 | 一个会话长期复用；发消息不再建会话，服务端 `chat_session` 列表基本不变 | 每次请求都「建会话 → 发一条 → 立刻删会话」，且初始化在数秒内完成 6 个请求 | 高频建删 + 极短会话，模式特征明显 |
 | 每轮请求数 | 1（completion）+ 必要的 PoW 挑战 | ≥3（create_session / create_pow_challenge / completion）+ 删除 | 单位对话的请求数是官方客户端的数倍 |
+| 风控令牌数量 | `x-hif-leim` **与** `x-hif-dliq` 两个（各自轮询、各自缓存；`dliq` 不可解析时跳过） | 只实现 `x-hif-leim`（`hif.rs` 结构已按“单端点”写好，但只实例化 leim） | 本网络下 `hif-dliq` 为 NXDOMAIN、官方客户端同样跳过 → **当前无差异**；在 dliq 可解析的地区会少一个头 |
 
 **两个候选改动（建议按此顺序做 A/B，每次只改一项）**：
 

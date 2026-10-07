@@ -195,6 +195,43 @@
 - `ds_core` 实现见 `ds_core/src/accounts/hif.rs`（TTL 缓存 + 失败退避 +
   账号初始化预热）
 
+### 0.4.1 前端源码里的确切结构（2026-10-07 提取自 `main.*.js`）
+
+```js
+// 两个独立轮询器，各自维护缓存键与退避
+this.leimPoller = poller(endPoints.leim, t("leim"));
+this.dliqPoller = poller(endPoints.dliq, t("dliq"));
+endPoints = {
+  leim: { url: KV ? "https://hif-leim.deepseek.com/query" : "https://hif-test.deepseek.com/query" },
+  dliq: { url: KV ? "https://hif-dliq.deepseek.com/query" : "https://hif-test.deepseek.com/query" },
+};
+maxBackoffMs = 1000 * getFrozenFeature("hif_max_retry_interval_secs", 600);
+// 取值后写入 localStorage：hif_leim_cached / hif_dliq_cached
+
+// 请求头提供者：两个令牌**一起**附加，谁为空就跳过谁
+(n = headers.leim || store.leim.get() || "") && (out["x-hif-leim"] = n);
+(r = headers.dliq || store.dliq.get() || "") && (out["x-hif-dliq"] = r);
+```
+
+要点：
+
+- 生产环境用 `hif-leim` / `hif-dliq` 两个域名；**非生产**（KV 开关关闭）两者都指向
+  `hif-test.deepseek.com/query`；
+- 两个令牌由同一个请求头提供者一起下发 —— 也就是说“只发 `x-hif-leim`”与真实客户端
+  并不完全等价（在 `dliq` 可解析的网络里）。
+
+### 0.4.2 实测：`hif-dliq` 在本网络不可解析（2026-10-07）
+
+- DNS：`hif-leim.deepseek.com` → WAF 地址（60.204.2.5 / huaweicloudwaf）；
+  **`hif-dliq.deepseek.com` 无解析结果（NXDOMAIN）**
+- 浏览器抓包（同一台机器）：对 `hif-dliq` 共发出 **4 次**请求、收到 **0 次**响应，
+  与 DNS 失败一致 —— 即真实客户端在这里也拿不到 dliq 值，`x-hif-dliq` 头被跳过
+- 直接用 `curl` 复验：`hif-leim` 返回 200 + `x-hif-ttl: 600` + 73 字符 value；
+  `hif-dliq` 直接报 `Could not resolve host`
+- 结论：**在本网络下**，“只发 `x-hif-leim`” 与官方客户端行为一致；
+  但在 `hif-dliq` 可解析的地区，官方客户端会额外带上 `x-hif-dliq`，此时我们的请求
+  仍然少一个头（见 `docs/development.md` 的《剩余差异》）。
+
 ---
 
 ## 1. 创建会话 create_session
