@@ -13,7 +13,10 @@ use ds_core::{ClientIdentity, DsClient, HifConfig, LoginPayload};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (config, _path) = ds_free_api::config::Config::load_with_args(std::env::args())?;
-    let only = std::env::args().nth(1).filter(|a| a.contains('@'));
+    // 邮箱可以是任意位置参数：`account_check <email> -c <config>` 与
+    // `account_check -c <config> <email>` 都要能用 —— 否则会静默地检查配置里的
+    // **所有**账号，违背「一次只用一个账号」的纪律。
+    let only = std::env::args().skip(1).find(|a| a.contains('@'));
 
     let client = DsClient::new(
         config.ds_core.api_base.clone(),
