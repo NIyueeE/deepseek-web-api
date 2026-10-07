@@ -26,6 +26,7 @@
 //!   `input_tokens_details.cached_tokens` 与 `output_tokens_details.reasoning_tokens`
 //! - 每个事件既带 `type`（与 SSE `event:` 同名）也带 `sequence_number`
 
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
@@ -311,7 +312,7 @@ struct StreamState {
     /// 结束原因
     finish_reason: Option<String>,
     /// 待发事件队列
-    pending: Vec<SseEvent>,
+    pending: VecDeque<SseEvent>,
     /// 收尾钩子（仅在成功完成时调用）
     on_finish: Option<FinishHook>,
     /// 已拿到 finish_reason 但仍在等上游的最终 usage 块
@@ -333,7 +334,7 @@ impl StreamState {
             tool_calls: 0,
             usage: None,
             finish_reason: None,
-            pending: Vec::new(),
+            pending: VecDeque::new(),
             on_finish,
             awaiting_usage: false,
         }
@@ -349,7 +350,7 @@ impl StreamState {
             );
             obj.insert("sequence_number".to_string(), serde_json::Value::from(seq));
         }
-        self.pending.push((name, data));
+        self.pending.push_back((name, data));
     }
 
     fn emit_created(&mut self) {
@@ -716,8 +717,7 @@ where
 
         loop {
             // 1) 先冲刷待发事件，保证事件顺序与 sequence_number 一致
-            if let Some(event) = this.state.pending.first().cloned() {
-                this.state.pending.remove(0);
+            if let Some(event) = this.state.pending.pop_front() {
                 return Poll::Ready(Some(Ok(sse_bytes(&event))));
             }
 

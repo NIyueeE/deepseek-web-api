@@ -58,6 +58,12 @@ pub enum ServerError {
     Unauthorized,
     /// 资源不存在
     NotFound(String),
+    /// 幂等键被复用在不同请求体上（400）
+    IdempotencyConflict,
+    /// 同幂等键的请求正在执行（409）
+    IdempotencyInProgress,
+    /// 同幂等键的历史响应不可回放（超限 / 上次中断，409）
+    IdempotencyUnreplayable,
 }
 
 impl fmt::Display for ServerError {
@@ -67,6 +73,18 @@ impl fmt::Display for ServerError {
             Self::Anthropic(e) => write!(f, "{e}"),
             Self::Unauthorized => write!(f, "invalid api token"),
             Self::NotFound(id) => write!(f, "模型 '{id}' 不存在"),
+            Self::IdempotencyConflict => write!(
+                f,
+                "Idempotency-Key 已用于不同的请求体；如需复用请使用新的 key"
+            ),
+            Self::IdempotencyInProgress => write!(
+                f,
+                "相同 Idempotency-Key 的请求正在处理中，请稍后重试或改用新的 key"
+            ),
+            Self::IdempotencyUnreplayable => write!(
+                f,
+                "相同 Idempotency-Key 的历史响应不可回放（响应体超限或上次未完整结束）"
+            ),
         }
     }
 }
@@ -87,9 +105,34 @@ impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         match &self {
             Self::Anthropic(e) => anthropic_error_response(e),
+            // `/anthropic/*` 上的幂等错误必须用 Anthropic 信封，否则 SDK 无法归类
+            Self::IdempotencyConflict
+            | Self::IdempotencyInProgress
+            | Self::IdempotencyUnreplayable => anthropic_idempotency_response(&self),
             _ => openai_error_response(&self),
         }
     }
+}
+
+/// Anthropic 形态的幂等错误（400 / 409）
+fn anthropic_idempotency_response(err: &ServerError) -> Response {
+    let status = if matches!(err, ServerError::IdempotencyConflict) {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::CONFLICT
+    };
+    let body = AnthropicErrorBody {
+        outer_type: "error",
+        error: AnthropicErrorDetail {
+            error_type: "invalid_request_error",
+            message: err.to_string(),
+        },
+    };
+    log::debug!(
+        target: "http::response",
+        "{} Anthropic idempotency error: {}", status, body.error.message
+    );
+    (status, Json(body)).into_response()
 }
 
 fn openai_error_response(err: &ServerError) -> Response {
@@ -116,6 +159,17 @@ fn openai_error_response(err: &ServerError) -> Response {
             StatusCode::NOT_FOUND,
             "invalid_request_error",
             "model_not_found",
+        ),
+        // 幂等键冲突属于客户端用法错误：code 对齐 Stripe / OpenAI 的 `idempotency_error`
+        ServerError::IdempotencyConflict => (
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "idempotency_error",
+        ),
+        ServerError::IdempotencyInProgress | ServerError::IdempotencyUnreplayable => (
+            StatusCode::CONFLICT,
+            "invalid_request_error",
+            "idempotency_error",
         ),
         // Anthropic 错误不会走到这里
         ServerError::Anthropic(_) => (

@@ -465,9 +465,19 @@ pub type SseEvent = (&'static str, serde_json::Value);
 
 /// 序列化为 `event: <name>\ndata: <json>\n\n`
 #[must_use]
+/// 序列化一个 Responses SSE 事件：`event: <name>\ndata: <json>\n\n`
+///
+/// 直接写入同一个缓冲区：省掉「JSON 字符串 + format! 再拼一份」的双重分配。
 pub fn sse_bytes(event: &SseEvent) -> bytes::Bytes {
-    let json = serde_json::to_string(&event.1).unwrap_or_else(|_| "{}".to_string());
-    bytes::Bytes::from(format!("event: {}\ndata: {}\n\n", event.0, json))
+    let mut buf = Vec::with_capacity(256);
+    buf.extend_from_slice(b"event: ");
+    buf.extend_from_slice(event.0.as_bytes());
+    buf.extend_from_slice(b"\ndata: ");
+    if serde_json::to_writer(&mut buf, &event.1).is_err() {
+        buf.extend_from_slice(b"{}");
+    }
+    buf.extend_from_slice(b"\n\n");
+    bytes::Bytes::from(buf)
 }
 
 #[cfg(test)]

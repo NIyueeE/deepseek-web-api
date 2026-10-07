@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use axum::{
     body::Body,
     extract::{FromRequestParts, Path, State},
-    http::{StatusCode, header, request::Parts},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
@@ -29,6 +29,9 @@ use crate::responses_adapter::{ResponsesAdapter, ResponsesOutput, ResponsesReque
 
 use super::auth::LoginLimiter;
 use super::error::ServerError;
+use super::idempotency::{
+    self, Begin, IdempotencyGuard, IdempotencyStore, RecordedResponse, RecordingStream,
+};
 use super::mask_prefix;
 use super::stats::Stats;
 use super::store::StoreManager;
@@ -147,6 +150,8 @@ pub(crate) struct AppState {
     pub(crate) store: Arc<StoreManager>,
     pub(crate) login_limiter: Arc<LoginLimiter>,
     pub(crate) config_path: PathBuf,
+    /// `Idempotency-Key` 缓存（进程内，有界 + TTL）
+    pub(crate) idempotency: Arc<IdempotencyStore>,
 }
 struct RequestRecord<'a> {
     request_id: &'a str,
@@ -192,13 +197,122 @@ impl AppState {
     }
 }
 
+// ── 幂等性（Idempotency-Key）───────────────────────────────────────────
+
+/// 客户端幂等键请求头（Stripe / OpenAI 约定）
+const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+/// 回放响应标记：客户端可据此判断「这次没有真的打上游」
+const IDEMPOTENT_REPLAYED_HEADER: &str = "idempotent-replayed";
+/// 幂等键长度上限（避免异常长 key 撑爆缓存 key）
+const IDEMPOTENCY_KEY_MAX_LEN: usize = 255;
+
+/// 幂等检查结果
+enum Idempotency {
+    /// 未提供 `Idempotency-Key`：按普通请求处理，行为与旧版本一致
+    Disabled,
+    /// 命中已完成记录，直接回放
+    Replay(RecordedResponse),
+    /// 首次执行，由调用方负责登记结果
+    Fresh(IdempotencyGuard),
+}
+
+/// 解析并检查 `Idempotency-Key`
+///
+/// 作用域 = `(API key, 方法+路径)`，指纹再叠加请求体：
+/// 不同租户复用同一个 key 字符串不会互相回放，同键不同体则报 400。
+fn check_idempotency(
+    state: &AppState,
+    api_key: &Option<String>,
+    path: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<Idempotency, ServerError> {
+    let Some(key) = headers
+        .get(IDEMPOTENCY_KEY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+    else {
+        return Ok(Idempotency::Disabled);
+    };
+    if key.len() > IDEMPOTENCY_KEY_MAX_LEN {
+        return Err(ServerError::IdempotencyConflict);
+    }
+
+    let scope = format!("{}:POST {path}", api_key.as_deref().unwrap_or(""));
+    let fp = idempotency::fingerprint(&scope, body);
+    match state.idempotency.begin(&scope, key, fp)? {
+        Begin::Fresh(guard) => Ok(Idempotency::Fresh(guard)),
+        Begin::Replay(recorded) => Ok(Idempotency::Replay(recorded)),
+        Begin::InProgress => Err(ServerError::IdempotencyInProgress),
+        Begin::Unreplayable => Err(ServerError::IdempotencyUnreplayable),
+    }
+}
+
+/// 直接回放已记录的响应（字节级一致，含状态码与 Content-Type）
+fn replay_response(recorded: RecordedResponse) -> Response {
+    (
+        StatusCode::from_u16(recorded.status).unwrap_or(StatusCode::OK),
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(recorded.content_type),
+            ),
+            (
+                HeaderName::from_static(IDEMPOTENT_REPLAYED_HEADER),
+                HeaderValue::from_static("true"),
+            ),
+        ],
+        Body::from(recorded.body),
+    )
+        .into_response()
+}
+
+/// 序列化 JSON 响应体：失败返回 500，而不是在请求路径上 panic
+fn json_bytes<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, ServerError> {
+    serde_json::to_vec(value).map_err(|e| {
+        ServerError::Adapter(OpenAIAdapterError::Internal(format!("序列化响应失败: {e}")))
+    })
+}
+
+/// 命中回放时提前返回；否则返回执行守卫（未带 key 时为 `None`）
+macro_rules! idempotency_gate {
+    ($state:expr, $api_key:expr, $path:expr, $headers:expr, $body:expr) => {
+        match check_idempotency($state, $api_key, $path, $headers, $body)? {
+            Idempotency::Replay(recorded) => return Ok(replay_response(recorded)),
+            Idempotency::Fresh(guard) => Some(guard),
+            Idempotency::Disabled => None,
+        }
+    };
+}
+
+/// 用记录器包裹 SSE 流：流正常结束时落库，客户端中途断开则撤销占位
+fn record_stream<S, E>(
+    stream: S,
+    guard: Option<IdempotencyGuard>,
+) -> std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>
+where
+    S: Stream<Item = Result<Bytes, E>> + Send + 'static,
+    E: 'static,
+{
+    match guard {
+        Some(guard) => Box::pin(RecordingStream::new(
+            stream,
+            guard.into_stream_recorder(StatusCode::OK.as_u16(), "text/event-stream"),
+        )),
+        None => Box::pin(stream),
+    }
+}
+
 /// POST /v1/chat/completions
 pub(crate) async fn chat_completions(
     State(state): State<AppState>,
     ApiKey(api_key): ApiKey,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
     let request_id = next_request_id();
+    let guard = idempotency_gate!(&state, &api_key, "/v1/chat/completions", &headers, &body);
     let timer = super::stats::RequestTimer::new(&state.stats);
     let timer_start = std::time::Instant::now();
     let req: ChatCompletionsRequest = serde_json::from_slice(&body)
@@ -248,7 +362,8 @@ pub(crate) async fn chat_completions(
                 },
             };
             log::debug!(target: "http::response", "req={request_id} 200 SSE stream started");
-            Ok(SseBody::new(guarded)
+            let stream = record_stream(guarded, guard);
+            Ok(SseBody::new(stream)
                 .with_header(X_DS_ACCOUNT, &mask_account_id(&result.account_id))
                 .into_response())
         }
@@ -269,7 +384,14 @@ pub(crate) async fn chat_completions(
                 latency_ms,
                 success: true,
             });
-            let bytes = serde_json::to_vec(&json).unwrap();
+            let bytes = json_bytes(&json)?;
+            if let Some(guard) = guard {
+                guard.complete(
+                    StatusCode::OK.as_u16(),
+                    "application/json",
+                    Bytes::from(bytes.clone()),
+                );
+            }
             log::debug!(target: "http::response", "req={} 200 JSON response {} bytes", request_id, bytes.len());
             Ok(Response::builder()
                 .status(StatusCode::OK)
@@ -313,9 +435,11 @@ pub(crate) async fn responses_get(
 pub(crate) async fn responses(
     State(state): State<AppState>,
     ApiKey(api_key): ApiKey,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
     let request_id = next_request_id();
+    let guard = idempotency_gate!(&state, &api_key, "/v1/responses", &headers, &body);
     let timer = super::stats::RequestTimer::new(&state.stats);
     let timer_start = std::time::Instant::now();
     let req: ResponsesRequest = serde_json::from_slice(&body)
@@ -364,7 +488,8 @@ pub(crate) async fn responses(
                 },
             };
             log::debug!(target: "http::response", "req={request_id} 200 Responses SSE started");
-            Ok(SseBody::new(guarded)
+            let stream = record_stream(guarded, guard);
+            Ok(SseBody::new(stream)
                 .with_header(X_DS_ACCOUNT, &mask_account_id(&result.account_id))
                 .with_header("openai-processing-ms", &latency_ms.to_string())
                 .into_response())
@@ -383,7 +508,14 @@ pub(crate) async fn responses(
                 latency_ms,
                 success: true,
             });
-            let bytes = serde_json::to_vec(&json).unwrap();
+            let bytes = json_bytes(&json)?;
+            if let Some(guard) = guard {
+                guard.complete(
+                    StatusCode::OK.as_u16(),
+                    "application/json",
+                    Bytes::from(bytes.clone()),
+                );
+            }
             log::debug!(
                 target: "http::response",
                 "req={} 200 Responses JSON {} bytes", request_id, bytes.len()
@@ -454,12 +586,14 @@ pub(crate) async fn get_model(
 pub(crate) async fn anthropic_messages(
     State(state): State<AppState>,
     ApiKey(api_key): ApiKey,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
     let request_id = next_request_id();
     let timer = super::stats::RequestTimer::new(&state.stats);
     let timer_start = std::time::Instant::now();
 
+    let guard = idempotency_gate!(&state, &api_key, "/anthropic/v1/messages", &headers, &body);
     let req: MessagesRequest = serde_json::from_slice(&body)
         .map_err(|e| AnthropicCompatError::BadRequest(format!("invalid JSON body: {e}")))?;
     log::debug!(target: "http::request", "req={} POST /anthropic/v1/messages stream={}", request_id, req.stream);
@@ -512,7 +646,8 @@ pub(crate) async fn anthropic_messages(
                 },
             };
             log::debug!(target: "http::response", "req={request_id} 200 SSE stream started");
-            Ok(SseBody::new(guarded)
+            let stream = record_stream(guarded, guard);
+            Ok(SseBody::new(stream)
                 .with_header(X_DS_ACCOUNT, &mask_account_id(&result.account_id))
                 .with_header(ANTHROPIC_REQUEST_ID, &request_id)
                 .into_response())
@@ -531,7 +666,14 @@ pub(crate) async fn anthropic_messages(
                 latency_ms,
                 success: true,
             });
-            let bytes = serde_json::to_vec(&json).unwrap();
+            let bytes = json_bytes(&json)?;
+            if let Some(guard) = guard {
+                guard.complete(
+                    StatusCode::OK.as_u16(),
+                    "application/json",
+                    Bytes::from(bytes.clone()),
+                );
+            }
             log::debug!(target: "http::response", "req={} 200 JSON response {} bytes", request_id, bytes.len());
             Ok(Response::builder()
                 .status(StatusCode::OK)

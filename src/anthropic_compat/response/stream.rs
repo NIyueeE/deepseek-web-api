@@ -1,5 +1,6 @@
 //! 流式响应映射 —— 将 ChatCompletionsResponseChunk 流映射为 MessagesResponseChunk 流
 
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -233,7 +234,7 @@ pin_project! {
         #[pin]
         inner: S,
         state: StreamState,
-        pending_events: Vec<MessagesResponseChunk>,
+        pending_events: VecDeque<MessagesResponseChunk>,
     }
 }
 
@@ -242,7 +243,7 @@ impl<S> AnthropicStream<S> {
         Self {
             inner,
             state: StreamState::new(),
-            pending_events: Vec::new(),
+            pending_events: VecDeque::new(),
         }
     }
 }
@@ -258,7 +259,7 @@ where
 
         // 优先输出待处理事件
         if !this.pending_events.is_empty() {
-            let event = this.pending_events.remove(0);
+            let event = this.pending_events.pop_front().expect("非空队列");
             return Poll::Ready(Some(Ok(event)));
         }
 
@@ -270,7 +271,7 @@ where
                     let events = this.state.handle_chunk(&chunk);
                     this.pending_events.extend(events);
                     if !this.pending_events.is_empty() {
-                        let event = this.pending_events.remove(0);
+                        let event = this.pending_events.pop_front().expect("非空队列");
                         return Poll::Ready(Some(Ok(event)));
                     }
                 }
@@ -295,7 +296,7 @@ where
                         this.pending_events.extend(events);
                     }
                     if !this.pending_events.is_empty() {
-                        let event = this.pending_events.remove(0);
+                        let event = this.pending_events.pop_front().expect("非空队列");
                         return Poll::Ready(Some(Ok(event)));
                     }
                     return Poll::Ready(None);
@@ -316,7 +317,7 @@ where
                         this.pending_events.extend(events);
                     }
                     if !this.pending_events.is_empty() {
-                        let event = this.pending_events.remove(0);
+                        let event = this.pending_events.pop_front().expect("非空队列");
                         return Poll::Ready(Some(Ok(event)));
                     }
                     return Poll::Ready(None);

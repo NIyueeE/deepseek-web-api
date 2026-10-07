@@ -6,6 +6,7 @@ mod admin;
 mod auth;
 mod error;
 mod handlers;
+mod idempotency;
 pub mod runtime_log;
 mod stats;
 mod store;
@@ -81,6 +82,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> anyhow::Result<()> {
         config_path: config_path.clone(),
         store: store.clone(),
         login_limiter: login_limiter.clone(),
+        idempotency: Arc::new(idempotency::IdempotencyStore::new()),
     };
     let router = build_router(state.clone(), &cors_origins);
 

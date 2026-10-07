@@ -395,58 +395,143 @@ impl MessagesResponseChunk {
         }
     }
 
-    /// 序列化为 Anthropic SSE 事件格式：event: xxx\ndata: {json}\n\n
+    /// 序列化为 Anthropic SSE 事件格式：`event: xxx\ndata: {json}\n\n`
+    ///
+    /// 直接用 `serde_json::to_writer` 写进同一个缓冲区：省掉
+    /// 「`json!` Value + JSON String + `format!` 再拼一份」的三次多余分配。
     pub fn to_sse_bytes(&self) -> Result<Bytes, serde_json::Error> {
-        let json = match self {
-            Self::MessageStart { message } => serde_json::to_string(&serde_json::json!({
-                "type": "message_start",
-                "message": message,
-            }))?,
-            Self::ContentBlockStart {
+        let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(b"event: ");
+        buf.extend_from_slice(self.event_name().as_bytes());
+        buf.extend_from_slice(b"\ndata: ");
+        serde_json::to_writer(&mut buf, &SseEventRef(self))?;
+        buf.extend_from_slice(b"\n\n");
+        if log::log_enabled!(target: "anthropic_compat::response::stream", log::Level::Trace) {
+            trace!(
+                target: "anthropic_compat::response::stream",
+                ">>> {}", String::from_utf8_lossy(&buf).trim()
+            );
+        }
+        Ok(Bytes::from(buf))
+    }
+}
+
+/// `MessagesResponseChunk` 的序列化视图：字段顺序与 Anthropic 文档一致
+struct SseEventRef<'a>(&'a MessagesResponseChunk);
+
+impl serde::Serialize for SseEventRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("type", self.0.event_name())?;
+        match self.0 {
+            MessagesResponseChunk::MessageStart { message } => {
+                map.serialize_entry("message", message)?;
+            }
+            MessagesResponseChunk::ContentBlockStart {
                 index,
                 content_block,
-            } => serde_json::to_string(&serde_json::json!({
-                "type": "content_block_start",
-                "index": index,
-                "content_block": content_block,
-            }))?,
-            Self::ContentBlockDelta { index, delta } => {
-                serde_json::to_string(&serde_json::json!({
-                    "type": "content_block_delta",
-                    "index": index,
-                    "delta": delta,
-                }))?
+            } => {
+                map.serialize_entry("index", index)?;
+                map.serialize_entry("content_block", content_block)?;
             }
-            Self::ContentBlockStop { index } => serde_json::to_string(&serde_json::json!({
-                "type": "content_block_stop",
-                "index": index,
-            }))?,
-            Self::Ping => serde_json::to_string(&serde_json::json!({
-                "type": "ping",
-            }))?,
-            Self::MessageDelta {
+            MessagesResponseChunk::ContentBlockDelta { index, delta } => {
+                map.serialize_entry("index", index)?;
+                map.serialize_entry("delta", delta)?;
+            }
+            MessagesResponseChunk::ContentBlockStop { index } => {
+                map.serialize_entry("index", index)?;
+            }
+            // ping / message_stop 只有 `type` 字段
+            MessagesResponseChunk::Ping | MessagesResponseChunk::MessageStop => {}
+            MessagesResponseChunk::MessageDelta {
                 stop_reason,
                 stop_sequence,
                 output_tokens,
             } => {
-                let mut obj = serde_json::json!({
-                    "type": "message_delta",
-                    "delta": {
-                        "stop_reason": stop_reason,
-                        "stop_sequence": stop_sequence,
+                map.serialize_entry(
+                    "delta",
+                    &StopReasonDelta {
+                        stop_reason: stop_reason.as_deref(),
+                        stop_sequence: stop_sequence.as_deref(),
                     },
-                });
+                )?;
                 if let Some(tokens) = output_tokens {
-                    obj["usage"] = serde_json::json!({"output_tokens": tokens});
+                    map.serialize_entry(
+                        "usage",
+                        &UsageDelta {
+                            output_tokens: *tokens,
+                        },
+                    )?;
                 }
-                serde_json::to_string(&obj)?
             }
-            Self::MessageStop => serde_json::to_string(&serde_json::json!({
-                "type": "message_stop",
-            }))?,
-        };
-        let sse = format!("event: {}\ndata: {}\n\n", self.event_name(), json);
-        trace!(target: "anthropic_compat::response::stream", ">>> {}", sse.trim());
-        Ok(Bytes::from(sse))
+        }
+        map.end()
+    }
+}
+
+/// `message_delta.delta` 负载
+#[derive(Serialize)]
+struct StopReasonDelta<'a> {
+    stop_reason: Option<&'a str>,
+    stop_sequence: Option<&'a str>,
+}
+
+/// `message_delta.usage` 负载（规范中只有 `output_tokens` 为必填）
+#[derive(Serialize)]
+struct UsageDelta {
+    output_tokens: u32,
+}
+
+#[cfg(test)]
+mod sse_serialization_tests {
+    use super::*;
+
+    fn sse_str(chunk: &MessagesResponseChunk) -> String {
+        String::from_utf8(chunk.to_sse_bytes().unwrap().to_vec()).unwrap()
+    }
+
+    /// 帧格式与 JSON 字段必须与 Anthropic 文档一致（含字段顺序与 `type` 注入）
+    #[test]
+    fn sse_frames_match_anthropic_shape() {
+        assert_eq!(
+            sse_str(&MessagesResponseChunk::Ping),
+            "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+        );
+        assert_eq!(
+            sse_str(&MessagesResponseChunk::MessageStop),
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        );
+        assert_eq!(
+            sse_str(&MessagesResponseChunk::ContentBlockStop { index: 2 }),
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\n"
+        );
+    }
+
+    /// `output_tokens` 缺省时不得下发 `usage`；有值时必须是 `message_delta.usage`
+    #[test]
+    fn message_delta_usage_is_optional() {
+        let without = sse_str(&MessagesResponseChunk::MessageDelta {
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            output_tokens: None,
+        });
+        assert_eq!(
+            without,
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null}}\n\n"
+        );
+
+        let with = sse_str(&MessagesResponseChunk::MessageDelta {
+            stop_reason: Some("tool_use".to_string()),
+            stop_sequence: Some("</stop>".to_string()),
+            output_tokens: Some(42),
+        });
+        assert!(
+            with.ends_with(
+                "\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":\"</stop>\"},\"usage\":{\"output_tokens\":42}}\n\n"
+            ),
+            "实际: {with}"
+        );
     }
 }
