@@ -20,6 +20,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > 见 `docs/development.md`。
 
 ### Added
+- **`GET /v1/responses/{id}`**（issue #110 第一步）：检索此前创建并保存的 Response 对象。
+  快照在流式收尾钩子里落库（因此流式请求创建的 response 也能检索），与
+  `previous_response_id` 共用同一份**进程内「有界 + TTL」缓存**：不存在 / 被容量淘汰 /
+  超时 → 404。重启即失效，磁盘持久化待排期；协议文档的「未实现」表同步更新
+- **多字节内容流式链路回归测试 + 输出链路审计**（issue #58）：中文**逐字**流式输出经过
+  完整链路（converter → tool_parser → stop/obfuscation）后必须与原文逐字节一致。
+  审计结论：`from_utf8_lossy` 只出现在「按 `\n\n` 切出的完整 SSE 帧」与受
+  `floor_char_boundary` 保护的调试预览上，**内容路径没有任何 lossy UTF-8 转换**
+  （issue 中那种「UTF-8 被按单字节西里尔表解码」的乱码不可能由本代理产生）
 - **`ds_core/examples/identity_probe.rs`**：客户端身份变体的 WAF 兼容性探测
   （只打无鉴权的 `/client/settings` 与用一次性假凭据打 `/users/login`，**不产生任何
   账号流量**）。顺带更正 2026-09-20 的过时结论：现在「安卓 App 身份」「全 Web Chrome

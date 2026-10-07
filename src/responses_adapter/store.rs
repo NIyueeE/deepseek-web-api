@@ -22,6 +22,8 @@ pub struct StoredTurn {
     pub input_text: Option<String>,
     /// 模型产出的 output 数组（原样保存，重建时按类型解析）
     pub output: Vec<serde_json::Value>,
+    /// 完整的 Response 对象快照（供 `GET /v1/responses/{id}` 原样返回）
+    pub response: serde_json::Value,
 }
 
 /// 有界 + TTL 的响应缓存
@@ -113,6 +115,14 @@ impl ResponseStore {
         }
     }
 
+    /// 取出用于 `GET /v1/responses/{id}` 的完整响应对象快照
+    ///
+    /// 与 `get` 同样受容量与 TTL 约束：过期 / 被淘汰即返回 `None`（调用方回 404）。
+    #[must_use]
+    pub fn get_response(&self, id: &str) -> Option<serde_json::Value> {
+        self.get(id).map(|turn| turn.response)
+    }
+
     /// 当前保存条数（测试用）
     #[must_use]
     pub fn len(&self) -> usize {
@@ -140,7 +150,28 @@ mod tests {
         StoredTurn {
             input_text: Some(text.to_string()),
             output: vec![serde_json::json!({"type": "message", "content": []})],
+            response: serde_json::json!({
+                "id": "resp_test",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type": "message", "content": []}],
+            }),
         }
+    }
+
+    #[test]
+    fn get_response_returns_snapshot_and_misses_after_eviction() {
+        let store = ResponseStore::new(1, 60);
+        store.insert("resp_1".to_string(), turn("hi"));
+        let snap = store.get_response("resp_1").expect("snapshot");
+        assert_eq!(snap["object"], "response");
+        assert_eq!(snap["status"], "completed");
+        assert!(store.get_response("nope").is_none());
+
+        // 容量为 1：插入新条目后旧快照被淘汰 → 404 语义
+        store.insert("resp_2".to_string(), turn("yo"));
+        assert!(store.get_response("resp_1").is_none());
+        assert!(store.get_response("resp_2").is_some());
     }
 
     #[test]

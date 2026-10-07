@@ -688,6 +688,34 @@ mod tests {
         assert_eq!(resp.usage.as_ref().unwrap().completion_tokens, 41);
     }
 
+    /// 回归（issue #58）：中文逐字流式输出时，聚合结果必须与原文**逐字节一致**，
+    /// 不允许出现替换字符或乱码。同时锁住「输出链路不做任何 lossy UTF-8 转换」这一性质。
+    #[tokio::test]
+    async fn multibyte_content_survives_stream_chain() {
+        let text = "只有一个分支 master，目前处于 V1.0.0 RC1 版本。路径：/home/用户/项目";
+        let chunks: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+        let pieces: Vec<(&str, &str)> = chunks.iter().map(|c| (c.as_str(), "RESPONSE")).collect();
+        let events = make_full_stream(&pieces, None);
+        let stream = futures::stream::iter(events);
+        let resp = aggregate(
+            stream,
+            "deepseek-default".into(),
+            super::StreamCfg {
+                include_usage: false,
+                include_obfuscation: false,
+                stop: vec![],
+                prompt_tokens: 0,
+                repair_fn: None,
+                tag_config: default_tag_config(),
+            },
+        )
+        .await
+        .unwrap();
+        let content = resp.choices[0].message.content.clone().unwrap_or_default();
+        assert_eq!(content, text, "多字节内容在流式链路中必须逐字节保留");
+        assert!(!content.contains('\u{FFFD}'), "不得出现替换字符");
+    }
+
     #[tokio::test]
     async fn aggregate_stop_truncation_multibyte() {
         // 回归：stop 串出现在多字节字符之后，字节位置不落在 char 边界上时不得 panic

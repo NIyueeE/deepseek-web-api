@@ -95,8 +95,10 @@ pub struct ResponseCtx {
     pub user: Option<String>,
 }
 
-/// 流式响应收尾钩子：拿到最终 `output` 数组时调用（用于写入 `previous_response_id` 缓存）
-pub type FinishHook = std::sync::Arc<dyn Fn(Vec<serde_json::Value>) + Send + Sync>;
+/// 流式响应收尾钩子：拿到最终 Response 对象快照时调用
+///
+/// 用于写入 `previous_response_id` 缓存与 `GET /v1/responses/{id}` 的检索快照。
+pub type FinishHook = std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>;
 
 impl ResponseCtx {
     /// 生成进行中的 Response 骨架（`output` 为空）
@@ -643,9 +645,11 @@ impl StreamState {
             snapshot.completed_at = Some(now_secs());
         }
 
-        // 落库（供后续 previous_response_id 使用）
-        if let Some(hook) = self.on_finish.take() {
-            hook(self.output.clone());
+        // 落库（供后续 previous_response_id 与 GET /v1/responses/{id} 使用）
+        if let Some(hook) = self.on_finish.take()
+            && let Ok(snapshot_json) = serde_json::to_value(&snapshot)
+        {
+            hook(snapshot_json);
         }
 
         let name = if status == "incomplete" {

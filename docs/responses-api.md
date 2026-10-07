@@ -221,7 +221,7 @@ responses_store_ttl_secs = 3600  # 条目存活秒数（默认 3600）
 
 | 能力 | 状态 |
 |------|------|
-| `GET /v1/responses/{id}` | 未实现路由（404） |
+| `GET /v1/responses/{id}` | **已实现**：返回创建时保存的完整 Response 对象快照；不存在 / 被容量淘汰 / 超过 TTL → 404（issue #110 第一步） |
 | `POST /v1/responses/{id}/cancel` | 未实现路由（404） |
 | `POST /v1/responses/input_tokens` | 未实现路由（404） |
 | `background: true` | 忽略，始终同步返回 |

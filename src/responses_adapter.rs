@@ -122,12 +122,18 @@ impl ResponsesAdapter {
                     let store = self.store.clone();
                     let id = ctx.id.clone();
                     let input_text = input_text.clone();
-                    Arc::new(move |output: Vec<serde_json::Value>| {
+                    Arc::new(move |snapshot: serde_json::Value| {
+                        let output = snapshot
+                            .get("output")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
                         store.insert(
                             id.clone(),
                             StoredTurn {
                                 input_text: input_text.clone(),
                                 output,
+                                response: snapshot,
                             },
                         );
                     }) as response::FinishHook
@@ -137,11 +143,13 @@ impl ResponsesAdapter {
             ChatOutput::Json(json) => {
                 let obj = response::from_chat_completions(&json, &ctx);
                 if ctx.store {
+                    let snapshot = serde_json::to_value(&obj).unwrap_or(serde_json::Value::Null);
                     self.store.insert(
                         obj.id.clone(),
                         StoredTurn {
                             input_text,
                             output: obj.output.clone(),
+                            response: snapshot,
                         },
                     );
                 }
@@ -154,6 +162,18 @@ impl ResponsesAdapter {
             account_id,
             prompt_tokens,
         })
+    }
+
+    /// GET /v1/responses/{id}
+    ///
+    /// 返回创建时保存的完整 Response 对象快照；未命中（不存在 / 已被容量淘汰 /
+    /// 超过 TTL）返回 `None`，由 HTTP 层映射为 404。
+    ///
+    /// 注意：快照保存在**进程内**（有界 + TTL），重启即失效 —— 与
+    /// `previous_response_id` 的存储语义一致。
+    #[must_use]
+    pub fn get_response(&self, id: &str) -> Option<serde_json::Value> {
+        self.store.get_response(id)
     }
 
     /// 按请求参数构造响应上下文（同时用于流式与非流式）

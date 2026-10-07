@@ -284,6 +284,30 @@ pub(crate) async fn chat_completions(
     }
 }
 
+/// GET /v1/responses/{id}
+///
+/// 检索此前创建并保存的 Response 对象（issue #110）。
+/// 快照保存在进程内有界 + TTL 缓存中：不存在 / 已被淘汰 / 已过期 → 404。
+pub(crate) async fn responses_get(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Response, ServerError> {
+    log::debug!(target: "http::request", "GET /v1/responses/{}", id);
+    state.responses_adapter.get_response(&id).map_or_else(
+        || Err(ServerError::NotFound(format!("response '{id}'"))),
+        |snapshot| {
+            let bytes = serde_json::to_vec(&snapshot).unwrap_or_default();
+            log::debug!(target: "http::response", "200 JSON response {} bytes", bytes.len());
+            Ok((
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                Body::from(bytes),
+            )
+                .into_response())
+        },
+    )
+}
+
 /// POST /v1/responses
 ///
 /// OpenAI Responses API。流式返回 `text/event-stream`（`event: <type>` +

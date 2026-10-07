@@ -120,6 +120,7 @@ fn build_router(state: AppState, cors_origins: Vec<String>) -> Router {
         .route("/v1/chat/completions", post(handlers::chat_completions))
         // OpenAI Responses API
         .route("/v1/responses", post(handlers::responses))
+        .route("/v1/responses/{id}", get(handlers::responses_get))
         .route("/v1/models", get(handlers::list_models))
         .route("/v1/models/{id}", get(handlers::get_model))
         .layer(middleware::from_fn(move |req, next| {

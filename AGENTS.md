@@ -447,6 +447,7 @@ The `x-ds-account` HTTP response header carries the account identifier upstream.
 | `GET /health` | `server::health` | Health check (`{"status": "ok"}`) |
 | `POST /v1/chat/completions` | `handlers::chat_completions` | OpenAI chat completion |
 | `POST /v1/responses` | `handlers::responses` | OpenAI Responses API (SSE events or Response object) |
+| `GET /v1/responses/{id}` | `handlers::responses_get` | Retrieve a stored Response object (in-process bounded+TTL cache; 404 when missing/evicted/expired) |
 | `GET /v1/models` | `handlers::list_models` | List models |
 | `GET /v1/models/{id}` | `handlers::get_model` | Get model |
 | `POST /anthropic/v1/messages` | `handlers::anthropic_messages` | Anthropic messages |
@@ -585,6 +586,7 @@ Follow `docs/code-style.md`:
 | Anthropic compat layer | `src/anthropic_compat/` | Built on openai_adapter, no direct ds_core access |
 | Responses API layer | `src/responses_adapter/` | Request/response mapping, SSE event state machine, `previous_response_id` cache |
 | Responses API protocol reference | `docs/responses-api.md` | Field tables, event sequence, store trade-offs, unimplemented list |
+| Responses retrieval | `src/responses_adapter/store.rs` | `StoredTurn.response` keeps the full snapshot for `GET /v1/responses/{id}`; in-process bounded+TTL (restart loses it) |
 | Compatibility audit | `docs/compat-audit.md` | Verified spec deltas for Chat Completions / Anthropic / Responses |
 | Anthropic streaming response | `src/anthropic_compat/response/stream.rs` | OpenAI SSE → Anthropic SSE event stream |
 | Anthropic aggregate response | `src/anthropic_compat/response/aggregate.rs` | OpenAI JSON → Anthropic JSON |
