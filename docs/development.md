@@ -110,12 +110,20 @@ Docker 镜像自动推送到 `ghcr.io/niyueee/ds-free-api:latest`。
 从 ghcr.io 拉取（推荐）：
 
 ```bash
-# 确认已创建 docker/config/ 目录（自动创建或手动 mkdir）
+# 首次部署：先准备容器配置
+cp docker/config.example.toml docker/config/config.toml
+
 docker compose -f docker/docker-compose.yaml up -d
 ```
 
-容器首次启动时自动创建最小配置，无需提前准备 `config.toml`。
 配置和数据通过 bind mount 持久化到宿主机的 `docker/config/` 和 `docker/data/`。
+
+> **已知问题（≤ v0.5.1 的已发布镜像）**：`/app/config` 被 bind mount 遮蔽时，
+> 若 `config.toml` 不存在，二进制会按代码默认值自动生成 `host = "127.0.0.1"` 的配置 ——
+> 服务只监听容器内回环，宿主机的 `22217` 端口连不上（容器 `Up` 但无响应）。
+> 因此**首次部署必须先 `cp` 上面的示例配置**。
+> 源码构建的镜像（`docker/Dockerfile` + `docker/entrypoint.sh`）已修复该问题：
+> 配置缺失或为空时由 entrypoint 用内置示例（`host = "0.0.0.0"`）初始化，并对已有配置不做改动。
 
 从源码构建本地 Docker 镜像：
 

@@ -1,5 +1,9 @@
 # Docker compose entry point — run from project root:
+#   cp config.example.toml config/config.toml   # 首次部署必须：见 README 的容器说明
 #   docker compose -f docker/docker-compose.yaml up -d
+#
+# 注意：≤ v0.5.1 的已发布镜像在 config.toml 缺失时会生成 host = "127.0.0.1" 的配置，
+# 导致宿主机访问不到 22217；源码构建的镜像（含 entrypoint.sh）已自动处理。
 
 services:
   ds-free-api:

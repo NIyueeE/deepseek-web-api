@@ -103,7 +103,13 @@ src/
 - `config.example.toml` — authoritative configuration reference with all fields documented
 - `examples/adapter_cli.rs` + `examples/adapter_cli/` — debug CLI + JSON request samples
 - `py-e2e-tests/` — Python e2e test suite (uv-managed, JSON-driven scenarios)
-- `docker/Dockerfile` + `docker/docker-compose.yaml` — Docker deployment (ghcr.io image)
+- `docker/Dockerfile` + `docker/entrypoint.sh` + `docker/docker-compose.yaml` — Docker deployment
+  (ghcr.io image). The entrypoint seeds `$DS_CONFIG_PATH` from the bundled
+  `docker/config.example.toml` (`host = "0.0.0.0"`) when it is missing/empty: a bind-mounted
+  `/app/config` shadows the baked-in config, and without seeding the binary auto-creates the
+  **code default** `host = "127.0.0.1"`, which makes the published port unreachable.
+  Images ≤ v0.5.1 still have the old behaviour, so their docs require `cp docker/config.example.toml
+  docker/config/config.toml` before the first `up -d`
 - `docs/` — `code-style.md`（代码注释、命名、错误消息约定），`logging-spec.md`（日志级别、target、模块级过滤），`deepseek-prompt-injection.md`（DeepSeek 原生标签、工具调用注入策略），`development.md`（环境配置、首次启动、Release 构建），`responses-api.md`（Responses API 协议实现说明），`compat-audit.md`（对照上游规范的兼容性审计）
 - `ds_core/raw-api-reference.md` — DeepSeek 后端 API 参考（端点、信封格式、SSE 增量协议、PoW、WAF 绕过）
 
@@ -653,7 +659,7 @@ Follow `docs/code-style.md`:
 | Identity/WAF probe | `ds_core/examples/identity_probe.rs` | Compares client-identity variants against the WAF using unauthenticated endpoints + throwaway credentials — **no account traffic** |
 | Example request JSON | `examples/adapter_cli/` | Pre-built ChatCompletionsRequest samples |
 | Scripted regression test | `just adapter-cli -- source examples/adapter_cli-script.txt` | Runs all JSON samples in sequence |
-| Docker deployment | `docker/Dockerfile` + `docker/docker-compose.yaml` | Pre-built ghcr.io image, bind mounts for config/data |
+| Docker deployment | `docker/Dockerfile` + `docker/entrypoint.sh` + `docker/docker-compose.yaml` | Pre-built ghcr.io image, bind mounts for config/data. First-run config seeding lives in the entrypoint (bind mount shadows the baked config); ≤ v0.5.1 images need a manual `cp` |
 | e2e scenario test framework | `py-e2e-tests/` | JSON-driven scenarios with checks |
 | CI pipeline | `.github/workflows/ci.yml` | `changes` gate + `build-frontend` + `check` + `test` + `security` |
 | Dependency audit policy | `.cargo/audit.toml` | Documented upstream warnings that cannot be fixed here (wreq 5.x yanked, transitive lru unsound) |

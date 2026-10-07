@@ -53,6 +53,9 @@ RUST_LOG=debug ./ds-free-api
 ### Docker Usage
 
 ```bash
+# First deployment: seed the container config (see note below)
+cp docker/config.example.toml docker/config/config.toml
+
 docker compose -f docker/docker-compose.yaml up -d
 ```
 
@@ -60,6 +63,13 @@ Refer to the [sample compose file](./docker/docker-compose.yaml) for reference.
 
 The admin panel is at `http://localhost:22217/admin`. Set your admin password on first visit.
 The `config/` and `data/` directories are bind-mounted into the container — config changes persist to the host automatically.
+
+> **`docker/config/config.toml` is required on first deployment** (the `cp` above).
+> Published images (≤ v0.5.1) fall back to the built-in code default `host = "127.0.0.1"` when the
+> config is missing, so the server only listens on the container loopback and host port `22217`
+> becomes **unreachable** (the container looks "Up" but does not answer). Images built from source
+> (`docker/Dockerfile` + `docker/entrypoint.sh`) are fixed: a missing or empty config is seeded from
+> the bundled example (`host = "0.0.0.0"`), so the `cp` is optional there.
 
 ### Free Test Accounts
 

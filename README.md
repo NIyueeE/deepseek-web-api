@@ -58,6 +58,9 @@ RUST_LOG=debug ./ds-free-api
 ### Docker 使用
 
 ```bash
+# 首次部署：先准备容器配置（见下方说明）
+cp docker/config.example.toml docker/config/config.toml
+
 docker compose -f docker/docker-compose.yaml up -d
 ```
 
@@ -65,6 +68,12 @@ Compose 配置见 [docker/docker-compose.yaml](./docker/docker-compose.yaml)。
 
 管理面板在 `http://localhost:22217/admin`，首次访问设置管理密码。
 `config/` 和 `data/` 目录通过 bind mount 挂载到容器内，配置修改自动持久化到宿主机。
+
+> **首次部署必须准备 `docker/config/config.toml`**（`cp` 上面那一行）。
+> 已发布镜像（≤ v0.5.1）在配置缺失时会按代码默认值生成 `host = "127.0.0.1"` 的配置，
+> 服务只监听容器内回环，宿主机的 `22217` 端口会**连不上**（容器显示 Up 但访问无响应）。
+> 从源码构建的镜像（`docker/Dockerfile` + `docker/entrypoint.sh`）已修复：配置缺失或为空时
+> 自动用内置示例（`host = "0.0.0.0"`）初始化，无需手动 `cp`。
 
 ### 免费测试账号
 
