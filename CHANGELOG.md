@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
+> **验证边界（务必阅读）**：本版把设备身份改为**按账号**派生（X-Device-Id + HIF
+> 令牌都按设备分桶），并修掉了 wasmtime 的 critical 安全公告。**「能否规避封号」
+> 仍未被证明**：唯一实测账号（9 月已累计多次违规）在最小流量后 19 分钟被判
+> `USER_BANNED`，官方提示「由于违规次数过多，你的账户已被临时停用」，属阶梯升级
+> 处罚。对照实验（另一账号，只用官方浏览器）仍在观测中。完整时间线与下一步实验
+> 设计见 `docs/development.md`。
+
 ### Security
 
 - **wasmtime 48.0.2 → 48.0.5**：RUSTSEC-2026-0315 / 0316 / 0325 / **0327（critical,
