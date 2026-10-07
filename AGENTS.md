@@ -836,6 +836,10 @@ just check-web     # frontend typecheck + lint + i18n key-set gate + build
 cargo build
 cargo build --release
 
+# 提交信息里若含反引号 / $，用文件或单引号传入，避免 shell 命令替换吃掉内容：
+#   git commit -F /tmp/msg.txt      （教训：`-c config email` 曾被替换成空串）
+git commit -F /tmp/msg.txt
+
 # Release (tag push triggers CI: 8 targets, 4 platforms, aarch64 on ARM runners)
 git tag v0.x.x
 git push origin v0.x.x
