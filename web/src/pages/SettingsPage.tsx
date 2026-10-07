@@ -522,6 +522,22 @@ export function SettingsPage() {
             </div>
 
             <div>
+              <label htmlFor="set-ds-emulation" className="text-xs font-medium text-muted-foreground block mb-1.5">
+                {t('config.deepseek.emulation')}
+              </label>
+              <Input
+                id="set-ds-emulation"
+                value={config.ds_core.emulation}
+                onChange={(e) => update(['ds_core', 'emulation'], e.target.value)}
+                className="font-mono text-xs"
+                placeholder="okhttp4_12 / chrome136"
+              />
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                {t('config.deepseek.emulationDesc')}
+              </p>
+            </div>
+
+            <div>
               <label htmlFor="set-ds-tz" className="text-xs font-medium text-muted-foreground block mb-1.5">
                 {t('config.deepseek.clientTimezoneOffset')}
               </label>

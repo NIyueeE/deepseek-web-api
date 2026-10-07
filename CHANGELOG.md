@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **传输层拟态改为自洽的原生 App 档位（`emulation = "okhttp4_12"`，默认）**：
+  2026-10-07 用本地 echo server 取证发现，此前发出的请求是
+  「安卓 App UA + `sec-ch-ua`: Chrome 136 **macOS** + `sec-fetch-dest: document`
+  地址栏导航头 + `accept: text/html,…` 文档 accept + `accept-language: en-US`」
+  的自相矛盾组合 —— 任何真实客户端都不会长这样（真实安卓 App 是 OkHttp：
+  `accept: */*`、无 client hints、无 sec-fetch）。改为 OkHttp 档位后，
+  请求头与默认 UA / `client_platform = android` 完全自洽，且 `accept-language`
+  跟随 `client_locale`。
+  - 老行为可用 `emulation = "chrome136"` 切回（仅当 UA / `client_platform` /
+    `client_os` 都切成 web 时才自洽）
+  - WAF 实测（三种档位 × 四个端点，均无 202 challenge）：`/client/settings` 200、
+    `/users/login` 200（假凭据 → `biz_code=2`）、`/chat/create_pow_challenge` 与
+    `/chat_session/create` 200（无效 token → `40003 Authorization Failed`）
+  - 管理面板「设置」页可配，三语言同步
+
 ### Fixed
 
 - **登录被终止性拒绝时不再反复重试**：账号处于 `Error` 时后台恢复任务每 60 秒重登一次，

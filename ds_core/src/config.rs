@@ -21,6 +21,8 @@ pub struct DsCoreConfig {
     pub client_timezone_offset: String,
     /// 登录 payload 的 os 字段（真实 Web 客户端为 "web"，App 为 "android"）
     pub client_os: String,
+    /// 传输层拟态档位（`okhttp4_12` = 原生 App，`chrome136` = 桌面 Chrome）
+    pub emulation: String,
     /// 是否在 completion 请求上回传 `x-hif-leim` 风控令牌
     ///
     /// 真实客户端会轮询 `hif-leim.deepseek.com` 取令牌并在 SSE 请求上带回；

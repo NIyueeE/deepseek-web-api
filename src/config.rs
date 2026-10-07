@@ -63,6 +63,14 @@ pub struct DsCoreSection {
     /// 登录 payload 的 os 字段（与 UA 身份保持一致：web / android）
     #[serde(default = "default_client_os")]
     pub client_os: String,
+    /// 传输层拟态档位（默认 `okhttp4_12`）
+    ///
+    /// - `okhttp4_12`：原生安卓 App 指纹，与默认 UA / `client_platform = android`
+    ///   自洽（TLS/HTTP2 = OkHttp，默认头不含 `sec-ch-ua*` / `sec-fetch-*`）
+    /// - `chrome136`：桌面 Chrome 指纹，仅当把 UA / `client_platform` / `client_os`
+    ///   都切成 web 时才自洽
+    #[serde(default = "default_emulation")]
+    pub emulation: String,
     /// 是否在 completion 请求上回传 `x-hif-leim` 风控令牌（默认 true）
     ///
     /// 真实 Web/App 客户端会轮询 `hif-leim.deepseek.com` 取令牌，并在 SSE
@@ -318,6 +326,10 @@ fn default_hif_enabled() -> bool {
     true
 }
 
+fn default_emulation() -> String {
+    "okhttp4_12".to_string()
+}
+
 /// HTTP 服务器配置（必填）
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerConfig {
@@ -492,6 +504,7 @@ impl Default for DsCoreSection {
             client_device_model: String::new(),
             client_timezone_offset: default_client_timezone_offset(),
             client_os: default_client_os(),
+            emulation: default_emulation(),
             hif_enabled: default_hif_enabled(),
             model_types: default_model_types(),
             max_input_tokens: default_max_input_tokens(),

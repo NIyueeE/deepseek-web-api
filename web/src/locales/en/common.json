@@ -139,7 +139,9 @@
       "clientDeviceId": "Client Device Id (device UUID)",
       "clientDeviceIdPlaceholder": "Leave empty to derive from api_base",
       "clientDeviceModel": "Client Device Model",
-      "clientTimezoneOffset": "Client Timezone Offset"
+      "clientTimezoneOffset": "Client Timezone Offset",
+      "emulation": "Transport emulation profile",
+      "emulationDesc": "TLS/HTTP2 fingerprint and default headers. Default okhttp4_12 (native Android app — consistent with the default UA / client_platform=android); use chrome136 only when the UA, client_platform and client_os are all switched to web."
     },
     "modelsSection": {
       "typeName": "Type Name",

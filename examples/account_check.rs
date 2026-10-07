@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enabled: config.ds_core.hif_enabled,
             ..HifConfig::default()
         },
+        ds_core::EmulationProfile::from_config(&config.ds_core.emulation).unwrap_or_default(),
         config.proxy.url.as_deref(),
     );
 

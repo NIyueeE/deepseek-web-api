@@ -1019,6 +1019,7 @@ mod tests {
                 enabled: false,
                 ..Default::default()
             },
+            super::super::client::EmulationProfile::default(),
             None,
         )
     }

@@ -139,7 +139,9 @@
       "clientDeviceId": "Client Device Id（设备 UUID）",
       "clientDeviceIdPlaceholder": "留空则按 api_base 自动派生",
       "clientDeviceModel": "Client Device Model",
-      "clientTimezoneOffset": "Client Timezone Offset"
+      "clientTimezoneOffset": "Client Timezone Offset",
+      "emulation": "传输层拟态档位",
+      "emulationDesc": "TLS/HTTP2 指纹与默认请求头档位。默认 okhttp4_12（原生安卓 App，与默认 UA / client_platform=android 自洽）；仅当把 UA / client_platform / client_os 都切成 web 时才用 chrome136。"
     },
     "modelsSection": {
       "typeName": "类型名",

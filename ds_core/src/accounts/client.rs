@@ -310,6 +310,41 @@ fn print_waf_hint() {
 /// 默认 HIF（风控令牌）取值端点
 const DEFAULT_HIF_LEIM_URL: &str = "https://hif-leim.deepseek.com/query";
 
+/// 传输层拟态档位（TLS/HTTP2 指纹 + 该档位自带的默认请求头）
+///
+/// 关键在于**自洽**：安卓 App UA 配 Chrome/macOS 的 client hints 与
+/// 「地址栏导航」头（`sec-fetch-dest: document`、`accept: text/html,…`）是
+/// 任何真实客户端都不会有的组合（2026-10-07 本地 echo server 取证）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EmulationProfile {
+    /// 原生安卓 App（OkHttp）：默认头只有 `accept: */*` / `accept-language` / UA，
+    /// 与 `user_agent = "DeepSeek/… Android/…"` + `client_platform = android` 自洽
+    #[default]
+    OkHttp4_12,
+    /// 桌面 Chrome：带 `sec-ch-ua*` / `sec-fetch-*` / 文档 accept，
+    /// 需要同时把 UA / `client_platform` / `client_os` 切成 web 才自洽
+    Chrome136,
+}
+
+impl EmulationProfile {
+    /// 解析配置值（未知值返回 None，由调用方告警并回退默认档位）
+    #[must_use]
+    pub fn from_config(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "okhttp4_12" | "okhttp_4_12" | "okhttp" | "app" => Some(Self::OkHttp4_12),
+            "chrome136" | "chrome_136" | "chrome" | "web" => Some(Self::Chrome136),
+            _ => None,
+        }
+    }
+
+    fn to_wreq(self) -> Emulation {
+        match self {
+            Self::OkHttp4_12 => Emulation::OkHttp4_12,
+            Self::Chrome136 => Emulation::Chrome136,
+        }
+    }
+}
+
 /// 客户端拟态身份（UA + x-client-* 请求头 + 登录 payload 的 os）
 #[derive(Debug, Clone, Default)]
 pub struct ClientIdentity {
@@ -350,6 +385,13 @@ impl ClientIdentity {
         put("X-Device-Id", &self.device_id)?;
         put("X-Device-Model", &self.device_model)?;
         put("X-Client-Timezone-Offset", &self.timezone_offset)?;
+        // 默认头里的 accept-language 固定 en-US，与 client_locale（默认 zh_CN）不符
+        if !self.client_locale.is_empty() {
+            put(
+                wreq::header::ACCEPT_LANGUAGE.as_str(),
+                &self.client_locale.replace('_', "-"),
+            )?;
+        }
         Ok(h)
     }
 }
@@ -389,9 +431,10 @@ impl DsClient {
         wasm_url: String,
         mut identity: ClientIdentity,
         hif: &HifConfig,
+        emulation: EmulationProfile,
         proxy_url: Option<&str>,
     ) -> Self {
-        let mut builder = wreq::Client::builder().emulation(Emulation::Chrome136);
+        let mut builder = wreq::Client::builder().emulation(emulation.to_wreq());
         if let Some(url) = proxy_url.and_then(|u| wreq::Proxy::all(u).ok()) {
             builder = builder.proxy(url);
         }
@@ -893,6 +936,7 @@ mod tests {
             "https://example.com/x.wasm".to_string(),
             test_identity(),
             &HifConfig::default(),
+            EmulationProfile::default(),
             None,
         )
     }
@@ -949,6 +993,7 @@ mod tests {
             "https://example.com/x.wasm".to_string(),
             identity,
             &HifConfig::default(),
+            EmulationProfile::default(),
             None,
         );
         assert_eq!(
@@ -989,6 +1034,24 @@ mod tests {
     }
 
     #[test]
+    fn emulation_profile_parsing() {
+        assert_eq!(
+            EmulationProfile::from_config("okhttp4_12"),
+            Some(EmulationProfile::OkHttp4_12)
+        );
+        assert_eq!(
+            EmulationProfile::from_config(" Chrome136 "),
+            Some(EmulationProfile::Chrome136)
+        );
+        assert_eq!(EmulationProfile::from_config("nope"), None);
+        assert_eq!(
+            EmulationProfile::default(),
+            EmulationProfile::OkHttp4_12,
+            "默认档位必须是自洽的原生 App 指纹"
+        );
+    }
+
+    #[test]
     fn hif_can_be_disabled() {
         let c = DsClient::new(
             "https://chat.deepseek.com/api/v0".to_string(),
@@ -998,6 +1061,7 @@ mod tests {
                 enabled: false,
                 ..HifConfig::default()
             },
+            EmulationProfile::default(),
             None,
         );
         assert!(c.hif.is_none(), "关闭后不应构造 HIF 令牌提供者");

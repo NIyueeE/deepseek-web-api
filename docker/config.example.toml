@@ -81,6 +81,19 @@ port = 22217
 # X-Client-Timezone-Offset 请求头（UTC+8 = 28800）
 # client_timezone_offset = "28800"
 
+# 传输层拟态档位（TLS/HTTP2 指纹 + 档位自带默认头）
+#
+#   okhttp4_12（默认）—— 原生安卓 App：默认头只有 accept / accept-language / UA，
+#                        与默认 UA（DeepSeek/… Android/…）+ client_platform=android 自洽
+#   chrome136         —— 桌面 Chrome：带 sec-ch-ua* / sec-fetch-* / 文档 accept，
+#                        必须同时把 user_agent / client_platform / client_os 都切成 web
+#
+# 背景（2026-10-07 本地 echo server 取证）：旧默认是「安卓 App UA + Chrome/macOS
+# client hints + 地址栏导航头」的自相矛盾组合，任何真实客户端都不会这样发。
+# 三种档位在 /client/settings、/users/login、/chat/create_pow_challenge、
+# /chat_session/create 上均实测可通过 WAF（无 202 challenge）。
+# emulation = "okhttp4_12"
+
 # 是否在 completion 请求上回传 x-hif-leim 风控令牌（默认 true）
 #
 # 真实 Web/App 客户端启动后会轮询 hif-leim.deepseek.com 取一个短期令牌

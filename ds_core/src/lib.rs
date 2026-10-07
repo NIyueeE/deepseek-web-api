@@ -9,7 +9,8 @@ mod config;
 pub use accounts::PoolError;
 pub use accounts::pool::AccountStatus;
 pub use accounts::{
-    ChatSessionInfo, ClientIdentity, DsClient, FetchSessionsData, HifConfig, LoginPayload,
+    ChatSessionInfo, ClientIdentity, DsClient, EmulationProfile, FetchSessionsData, HifConfig,
+    LoginPayload,
 };
 pub use chat::{ChatRequest, ChatResponse, FilePayload, StreamEvent};
 pub use config::{AccountConfig, DsCoreConfig};

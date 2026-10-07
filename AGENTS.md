@@ -19,7 +19,7 @@ Rust API proxy exposing free DeepSeek model endpoints. Translates standard OpenA
 - `wasmtime` — executes DeepSeek's PoW WASM solver; the entire PoW system depends on this (pinned to 48.x, see `.cargo/audit.toml`)
 - `tiktoken-rs` — client-side prompt token counting (DeepSeek returns 0 for `prompt_tokens`)
 - `pin-project-lite` — underpins every streaming response wrapper (`ConverterStream`, `ToolCallStream`, `RepairStream`, `StopDetectStream`)
-- `axum` / `wreq` — HTTP server and client respectively; `wreq` uses BoringSSL with Chrome 136 TLS fingerprint for WAF bypass
+- `axum` / `wreq` — HTTP server and client respectively; `wreq` uses BoringSSL, and the TLS/HTTP2 fingerprint is selected by the `emulation` config (`okhttp4_12` = native Android app, default; `chrome136` = desktop Chrome) so that the fingerprint matches the UA / `client_platform` identity
 - `tokio` with `signal` feature — async runtime with graceful shutdown on SIGTERM/SIGINT
 
 ---

@@ -114,6 +114,50 @@ async fn probe_login(name: &str, platform: Platform, ua: &str, emulation: Emulat
     }
 }
 
+/// 用**无效 token**打需要鉴权的端点：能拿到业务错误码（40003 Authorization Failed）
+/// 就说明该身份通过了 WAF；返回 202 则是 WAF challenge
+async fn probe_authed(name: &str, platform: Platform, ua: &str, emulation: Emulation) {
+    let client = match wreq::Client::builder().emulation(emulation).build() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("{name:38} 构建客户端失败: {e}");
+            return;
+        }
+    };
+    for (path, body) in [
+        (
+            "/api/v0/chat/create_pow_challenge",
+            serde_json::json!({"target_path": "/api/v0/chat/completion"}),
+        ),
+        ("/api/v0/chat_session/create", serde_json::json!({})),
+    ] {
+        let mut req = client
+            .post(format!("https://chat.deepseek.com{path}"))
+            .header("authorization", "Bearer invalid-probe-token")
+            .timeout(Duration::from_secs(15))
+            .json(&body);
+        for (k, v) in base_headers(platform, ua) {
+            req = req.header(k, v);
+        }
+        match req.send().await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let waf = resp
+                    .headers()
+                    .get("x-amzn-waf-action")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-")
+                    .to_string();
+                let text = resp.text().await.unwrap_or_default();
+                let head: String = text.chars().take(80).collect();
+                println!("{name:38} {path:34} status={status} waf={waf} body={head}");
+            }
+            Err(e) => println!("{name:38} {path:34} 请求错误: {e}"),
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     // 当前实现：安卓 App 身份 + Chrome136 TLS 指纹（UA 与 sec-ch-ua 并不自洽）
@@ -158,6 +202,32 @@ async fn main() {
         Platform::Web,
         UA_CHROME,
         Emulation::Chrome136,
+    )
+    .await;
+
+    // 需鉴权端点（无效 token）：三种身份哪几种能过 WAF 到达应用层
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    probe_authed(
+        "authed: android-app + Chrome136",
+        Platform::Android,
+        UA_ANDROID,
+        Emulation::Chrome136,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    probe_authed(
+        "authed: web-chrome + Chrome136",
+        Platform::Web,
+        UA_CHROME,
+        Emulation::Chrome136,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    probe_authed(
+        "authed: android-app + OkHttp4.12",
+        Platform::Android,
+        UA_ANDROID,
+        Emulation::OkHttp4_12,
     )
     .await;
 }

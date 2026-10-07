@@ -24,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             client_os: "android".to_string(),
         },
         &HifConfig::default(),
+        ds_core::EmulationProfile::default(),
         None,
     );
 

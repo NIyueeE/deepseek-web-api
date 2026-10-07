@@ -190,6 +190,7 @@ export interface DsCoreConfig {
   client_device_id: string;
   client_device_model: string;
   client_timezone_offset: string;
+  emulation: string;
   hif_enabled: boolean;
   model_types: string[];
   max_input_tokens: number[];
@@ -240,6 +241,7 @@ const DEFAULTS = {
   clientDeviceId: '',
   clientDeviceModel: '',
   clientTimezoneOffset: '28800',
+  emulation: 'okhttp4_12',
   hifEnabled: true,
   maxInputTokens: 1048576,
   maxOutputTokens: 384000,
@@ -292,6 +294,7 @@ export function normalizeConfig(raw: any): FullConfig {
       client_device_id: core.client_device_id ?? DEFAULTS.clientDeviceId,
       client_device_model: core.client_device_model ?? DEFAULTS.clientDeviceModel,
       client_timezone_offset: core.client_timezone_offset ?? DEFAULTS.clientTimezoneOffset,
+      emulation: core.emulation ?? DEFAULTS.emulation,
       hif_enabled:
         typeof core.hif_enabled === 'boolean' ? core.hif_enabled : DEFAULTS.hifEnabled,
       model_types: modelTypes,

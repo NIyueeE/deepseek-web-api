@@ -14,8 +14,8 @@ use tokio::sync::RwLock;
 use crate::CoreError;
 use crate::config::{AccountConfig, DsCoreConfig};
 pub use client::{
-    ChatSessionInfo, ClientError, ClientIdentity, CompletionPayload, DsClient, FetchSessionsData,
-    HifConfig, LoginPayload, StopStreamPayload,
+    ChatSessionInfo, ClientError, ClientIdentity, CompletionPayload, DsClient, EmulationProfile,
+    FetchSessionsData, HifConfig, LoginPayload, StopStreamPayload,
 };
 pub use pool::{Account, AccountGuard, AccountPool, AccountStatus, PoolError};
 pub use pow::{PowError, PowSolver};
@@ -40,6 +40,14 @@ fn build_client(config: &DsCoreConfig) -> DsClient {
             enabled: config.hif_enabled,
             ..HifConfig::default()
         },
+        EmulationProfile::from_config(&config.emulation).unwrap_or_else(|| {
+            log::warn!(
+                target: "ds_core::client",
+                "未知的 emulation 配置值 {:?}，回退到默认档位（okhttp4_12）",
+                config.emulation
+            );
+            EmulationProfile::default()
+        }),
         config.proxy_url.as_deref(),
     )
 }

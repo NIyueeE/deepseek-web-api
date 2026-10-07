@@ -139,7 +139,9 @@
       "clientDeviceId": "Client Device Id (UUID perangkat)",
       "clientDeviceIdPlaceholder": "Biarkan kosong untuk derivasi dari api_base",
       "clientDeviceModel": "Client Device Model",
-      "clientTimezoneOffset": "Client Timezone Offset"
+      "clientTimezoneOffset": "Client Timezone Offset",
+      "emulation": "Profil emulasi transport",
+      "emulationDesc": "Sidik jari TLS/HTTP2 dan header bawaan. Default okhttp4_12 (aplikasi Android native — konsisten dengan UA / client_platform=android bawaan); gunakan chrome136 hanya bila UA, client_platform, dan client_os semuanya diubah ke web."
     },
     "modelsSection": {
       "typeName": "Nama Tipe",
