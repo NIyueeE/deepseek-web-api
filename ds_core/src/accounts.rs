@@ -63,10 +63,6 @@ impl Accounts {
     ) -> Result<Arc<Self>, CoreError> {
         let client = build_client(config);
 
-        // 真实客户端在应用启动时即开始轮询 HIF 令牌，这里同步预热，
-        // 避免首个业务请求才现取（首次取令牌失败也不阻断启动）
-        client.warm_up_hif().await;
-
         let wasm_bytes = client.get_wasm().await?;
         let solver = PowSolver::new(&wasm_bytes)?;
 
@@ -266,7 +262,6 @@ impl Accounts {
 
     pub async fn reload_config(&self, config: &DsCoreConfig) -> Result<(), CoreError> {
         let client = build_client(config);
-        client.warm_up_hif().await;
         let wasm_bytes = client.get_wasm().await?;
         let solver = PowSolver::new(&wasm_bytes)?;
 

@@ -659,6 +659,20 @@ impl AccountPool {
 
     /// 尝试重新登录 Error 状态的账号
     /// 成功 → Idle，失败 → error_count++，≥3 则 Invalid
+    /// 登录阶段的**终止性**错误：重试不会改变结果
+    ///
+    /// 封禁（10）/ 禁言（5）/ 设备校验失败（11）/ 凭据错误（2）以及本地校验失败，
+    /// 反复重试只会继续打上游 —— 文档里明确「禁言后继续重试不会加速解禁，反而可能延长」。
+    fn is_terminal_login_error(e: &PoolError) -> bool {
+        match e {
+            PoolError::Validation(_) => true,
+            PoolError::Client(ClientError::Business { code, .. }) => {
+                matches!(code, 2 | 5 | 10 | 11)
+            }
+            _ => false,
+        }
+    }
+
     async fn re_login_account(account: &Account, client: &DsClient, solver: &PowSolver) {
         let display_id = account.display_id().to_string();
         match try_init_account(&account.creds, client, solver).await {
@@ -670,6 +684,17 @@ impl AccountPool {
                     .store(AccountState::Idle as u8, Ordering::Relaxed);
                 account.error_count.store(0, Ordering::Relaxed);
                 info!(target: "ds_core::accounts", "Account {} re-login successful", display_id);
+            }
+            Err(e) if Self::is_terminal_login_error(&e) => {
+                // 终止性错误：立即置 Invalid，停止重试（避免反复登录已被封禁/禁言的账号）
+                account
+                    .state
+                    .store(AccountState::Invalid as u8, Ordering::Relaxed);
+                error!(
+                    target: "ds_core::accounts",
+                    "Account {} 登录被终止性拒绝，已标记 Invalid 并停止重试: {}",
+                    display_id, e
+                );
             }
             Err(e) => {
                 let count = account.error_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -792,6 +817,9 @@ async fn try_init_account(
     // 设备身份按账号派生（空 device_id 时回退到全局配置的 X-Device-Id）
     let x_device_id = account_x_device_id(creds, client);
     let client = &client.scoped_to(&x_device_id);
+    // 真实客户端在启动时就取好该设备的 HIF 令牌；这里同样预热，
+    // 失败不阻断（与客户端轮询失败时的行为一致）
+    client.warm_up_hif().await;
 
     let login_payload = LoginPayload {
         email: creds.email.clone(),
@@ -1003,6 +1031,28 @@ mod tests {
             password: "pw".to_string(),
             device_id: device_id.to_string(),
         }
+    }
+
+    #[test]
+    fn terminal_login_errors_stop_retrying() {
+        use super::super::client::ClientError;
+        // 封禁 / 禁言 / 设备校验失败 / 凭据错误 → 终止
+        for code in [2, 5, 10, 11] {
+            assert!(
+                AccountPool::is_terminal_login_error(&PoolError::Client(ClientError::Business {
+                    code,
+                    msg: String::new(),
+                })),
+                "biz_code={code} 应视为终止性错误"
+            );
+        }
+        assert!(AccountPool::is_terminal_login_error(
+            &PoolError::Validation("账号异常(muted/limited)".into())
+        ));
+        // 网络类错误仍应重试
+        assert!(!AccountPool::is_terminal_login_error(&PoolError::Pow(
+            super::super::PowError::NoSolution
+        )));
     }
 
     #[test]
