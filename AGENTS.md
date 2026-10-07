@@ -287,6 +287,11 @@ Each account runs `try_init_account()`:
 3. `health_check` — test completion (with PoW) against `default` to verify a writable session
 4. `delete_session` — always runs, including on health-check failure
 
+Steps 2–4 are skipped when `startup_health_check = false` (see the capability table): the real
+client only logs in / rotates the device token / lists sessions at startup and never sends a
+message, so this flag exists to reproduce that sequence in A/B experiments. Account validity is
+still covered by a successful login plus the mute early-check (`biz_code` 5).
+
 There is **no retry inside `init()`** and **no `InitFailed` state** — a failure immediately
 marks the account `Invalid`. The states are `Idle` / `Busy` / `Error` / `Invalid`.
 
@@ -408,9 +413,23 @@ Request fields mapped in `request/resolver.rs`:
   `chrome136` suits a web identity (Chrome UA + `client_platform = web` + `client_os = web`).
   The 2026-09 note that "desktop Chrome UA is blocked by WAF 202" no longer holds — see
   `docs/development.md` (2026-10-07 identity probe).
-- **HIF risk token** (`hif_enabled`, default true): `x-hif-leim`, fetched from
-  `hif-leim.deepseek.com` per device identity (TTL from `x-hif-ttl`) and attached to SSE
-  requests only. Disabling it is for A/B experiments only.
+- **HIF risk tokens** (`hif_enabled`, default true): the official client polls **two**
+  isomorphic endpoints (`hif-leim.deepseek.com` / `hif-dliq.deepseek.com`), caches both
+  (`hif_leim_cached` / `hif_dliq_cached`, TTL from `x-hif-ttl`, default 600s) and attaches
+  whichever it has as `x-hif-leim` / `x-hif-dliq` on SSE requests only. `ds_core` mirrors that:
+  one bucket per device identity holding both tokens, exponential failure backoff (30s → 10min),
+  `hif-dliq` being NXDOMAIN in some networks is expected and simply skips that header.
+  Disabling it is for A/B experiments only.
+- **Startup health check** (`startup_health_check`, default true): when false, init skips the
+  create-session → completion → delete-session probe (official clients send no message at
+  startup). For A/B experiments only.
+- **Session policy** (`session_policy`, default `per_request`): `reuse` keeps each account's
+  session and reuses it for later requests instead of creating and deleting one per request
+  (the official client reuses a single session indefinitely). Sessions are returned on normal
+  stream end, invalidated on any request failure (`ReuseGuard`), reaped when idle for
+  `session_idle_secs` (0 = only at shutdown) and unconditionally on `DsCore::shutdown`.
+  The upstream semantics of reuse (continuing with `parent_message_id = null`) are **not yet
+  verified with a real account**, hence the default stays `per_request`.
 
 ### Overloaded Retry
 
@@ -652,9 +671,9 @@ Follow `docs/code-style.md`:
 | Idempotency cache | `src/server/idempotency.rs` | `Idempotency-Key` scope/conflict/replay rules + `RecordingStream` for SSE replay |
 | PoW WASM solver | `ds_core/src/accounts/pow.rs` | wasmtime loading, dynamic export probing, DeepSeekHashV1 |
 | DeepSeek HTTP client | `ds_core/src/accounts/client.rs` | `Envelope::into_result()`, WAF detection, all API methods |
-| HIF risk-control token | `ds_core/src/accounts/hif.rs` | `x-hif-leim`: polled from `hif-leim.deepseek.com/query` (no auth), TTL from `x-hif-ttl`, attached to SSE requests only. Missing it marks the request as a non-official client — see `docs/development.md` (2026-10-07) |
+| HIF risk-control tokens | `ds_core/src/accounts/hif.rs` | `x-hif-leim` **and** `x-hif-dliq`: two isomorphic no-auth endpoints, TTL from `x-hif-ttl`, per-device buckets, attached to SSE requests only (whichever is available). Missing them marks the request as a non-official client — see `docs/development.md` (2026-10-07) |
 | Unified debug CLI | `examples/adapter_cli.rs` | Modes: chat/raw/compare/concurrent/status/models |
-| Risk-token probe | `examples/hif_probe.rs` | Checks the `hif-leim` endpoint only — **no account traffic** |
+| Risk-token probe | `examples/hif_probe.rs` | Checks the `hif-leim` endpoint only — **no account traffic** (`hif-dliq` is NXDOMAIN in some networks; the browser also fails to fetch it there) |
 | Account status check | `examples/account_check.rs` | Login-only `is_muted` / `mute_until` check (1 request per account) |
 | Identity/WAF probe | `ds_core/examples/identity_probe.rs` | Compares client-identity variants against the WAF using unauthenticated endpoints + throwaway credentials — **no account traffic** |
 | Example request JSON | `examples/adapter_cli/` | Pre-built ChatCompletionsRequest samples |

@@ -743,7 +743,15 @@ UA / `client_platform` / `client_os` 切成 web，则应同时设 `emulation = "
 | 每轮请求数 | 1（completion）+ 必要的 PoW 挑战 | ≥3（create_session / create_pow_challenge / completion）+ 删除 | 单位对话的请求数是官方客户端的数倍 |
 | 风控令牌数量 | `x-hif-leim` **与** `x-hif-dliq` 两个（各自轮询、各自缓存；`dliq` 不可解析时跳过） | 只实现 `x-hif-leim`（`hif.rs` 结构已按“单端点”写好，但只实例化 leim） | 本网络下 `hif-dliq` 为 NXDOMAIN、官方客户端同样跳过 → **当前无差异**；在 dliq 可解析的地区会少一个头 |
 
-**两个候选改动（建议按此顺序做 A/B，每次只改一项）**：
+**三个候选改动的实现状态（2026-10-07 已落地，默认均不改变现行为）**：
+
+| 候选 | 配置 | 默认 | 状态 |
+|------|------|------|------|
+| 启动阶段不跑 completion | `startup_health_check` | `true` | ✅ 已实现（置 `false` 即对齐官方启动序列） |
+| 会话复用与延迟删除 | `session_policy = "reuse"` + `session_idle_secs` | `per_request` / 900 | ✅ 已实现（复用 + 失败失效 + 空闲回收 + 退出回收） |
+| 双风控令牌 | `hif_enabled`（内部含 leim + dliq） | `true` | ✅ 已实现（本网络 dliq NXDOMAIN，行为与之前一致） |
+
+**A/B 实验设计（每次只改一项，全新账号 + ≥24h 窗口）**：
 
 1. **启动阶段不跑 completion**：`try_init_account` 只保留「登录 → check_device → 建会话」，
    把 health_check 换成「建会话成功即认为可用」（或把 health_check 放到首次真实请求时顺带完成）。
@@ -751,5 +759,11 @@ UA / `client_platform` / `client_os` 切成 web，则应同时设 `emulation = "
 2. **会话复用与延迟删除**：同一账号复用已有会话（真实客户端一个会话发多条消息），
    删除改为「空闲 N 分钟后」或「仅进程退出时」，避免「发一条就删」的显式短会话。
 
-两项都需要**全新账号 + ≥24h 窗口**才能验证（历史上快速处罚 +19/+37min、
-延迟处罚 ~2.5h、本次 ≥6h），因此**在没有干净账号之前不要默认开启**。
+1. 基线组：默认配置（`startup_health_check = true`、`session_policy = per_request`）；
+2. 实验组 A：只把 `startup_health_check` 置 `false`；
+3. 实验组 B：在 A 的基础上把 `session_policy` 置 `reuse`（`session_idle_secs = 900`）；
+4. 对照组：同一账号只用官方浏览器做同强度使用。
+
+历史处罚时延：快速处罚 +19 / +37 分钟；延迟处罚 ~2.5h、本次 ≥6h —— 因此
+**观察窗口必须 ≥24h**，且必须用**登录后的真实页面**判断（`mute.js` 的 localStorage
+缓存会给出假阴性）。三个开关在拿到干净账号之前**不要**在生产默认开启。

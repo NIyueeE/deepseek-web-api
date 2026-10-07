@@ -111,9 +111,13 @@ impl DsCore {
         self.accounts.re_login_single(email_or_mobile).await
     }
 
-    /// 优雅关闭：清理所有残留 session
+    /// 优雅关闭：清理所有残留 session（活动中的 + 复用缓存的）
     pub async fn shutdown(&self) {
         self.chat.shutdown().await;
+        let reaped = self.accounts.reap_all_sessions().await;
+        if reaped > 0 {
+            log::info!(target: "ds_core::accounts", "shutdown: 回收 {reaped} 个复用会话");
+        }
     }
 
     pub async fn reload_config(&self, config: &DsCoreConfig) -> Result<(), CoreError> {

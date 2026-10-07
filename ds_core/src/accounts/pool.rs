@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use dashmap::DashMap;
 use futures::TryStreamExt;
@@ -117,12 +117,23 @@ pub struct Account {
     creds: AccountConfig,
     /// 滑动窗口限流器（用于每小时配额）
     window: SlidingWindowRateLimiter,
+    /// 复用会话槽（`session_reuse = true` 时使用）
+    ///
+    /// 真实客户端一个会话长期复用、几乎不删；这里保存最近一次成功完成的会话，
+    /// 空闲超过阈值由后台任务回收（见 `AccountPool::reap_sessions`）。
+    session: Mutex<Option<CachedSession>>,
     /// 绑定该账号设备身份（X-Device-Id）的客户端视图
     ///
     /// 真实 Web 客户端「一个浏览器 profile = 一个数美 device_id + 一个
     /// X-Device-Id」，HIF 风控令牌也按设备下发；这里按账号派生，
     /// 避免多账号共用同一设备身份与同一令牌。
     client: DsClient,
+}
+
+/// 复用会话槽里的一条记录
+struct CachedSession {
+    id: String,
+    last_used: Instant,
 }
 
 /// 连续登录失败上限，达到后标记为 Invalid
@@ -257,6 +268,43 @@ impl SlidingWindowRateLimiter {
 }
 
 impl Account {
+    /// 当前缓存的会话 ID（`session_reuse` 模式下复用）
+    pub(crate) fn cached_session_id(&self) -> Option<String> {
+        self.session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| c.id.clone())
+    }
+
+    /// 记下可复用的会话（流正常结束后调用）
+    pub(crate) fn put_cached_session(&self, session_id: &str) {
+        let mut slot = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = Some(CachedSession {
+            id: session_id.to_string(),
+            last_used: Instant::now(),
+        });
+    }
+
+    /// 清掉缓存的会话（仅在 ID 匹配时，避免误删新会话）
+    pub(crate) fn clear_cached_session(&self, session_id: &str) {
+        let mut slot = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.as_ref().is_some_and(|c| c.id == session_id) {
+            *slot = None;
+        }
+    }
+
+    /// 取出需要回收的会话：`max_idle = None` 表示无条件回收（进程退出时）
+    fn take_reapable_session(&self, max_idle: Option<Duration>) -> Option<String> {
+        let mut slot = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        let due = match (slot.as_ref(), max_idle) {
+            (Some(c), Some(idle)) => c.last_used.elapsed() >= idle,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if due { slot.take().map(|c| c.id) } else { None }
+    }
+
     pub fn token(&self) -> Arc<str> {
         self.token.read().unwrap().clone()
     }
@@ -313,6 +361,7 @@ impl Account {
             error_count: AtomicU8::new(MAX_ERROR_COUNT),
             creds,
             window: SlidingWindowRateLimiter::new(),
+            session: Mutex::new(None),
             client: scoped,
         }
     }
@@ -368,6 +417,12 @@ impl Drop for AccountGuard {
 pub struct AccountPool {
     /// 每账号每小时请求上限（0 = 不限制）
     hourly_quota: u64,
+    /// 启动时是否用一条 completion 做健康检查（false = 对齐真实客户端启动序列）
+    startup_health_check: bool,
+    /// 是否复用账号会话（false = 每轮建删，历史行为）
+    session_reuse: bool,
+    /// 复用模式下会话的空闲回收秒数（0 = 只在进程退出时删除）
+    session_idle_secs: u64,
     /// key = display_id (email or mobile), value = Account
     accounts: DashMap<String, Arc<Account>>,
     client: RwLock<Option<DsClient>>,
@@ -406,13 +461,58 @@ pub enum PoolError {
 }
 
 impl AccountPool {
-    pub fn new(hourly_quota: u64) -> Self {
+    pub fn new(hourly_quota: u64, startup_health_check: bool) -> Self {
         Self {
             hourly_quota,
+            startup_health_check,
+            // 默认保持历史行为：不复用会话（每轮建删）
+            session_reuse: false,
+            session_idle_secs: 0,
             accounts: DashMap::new(),
             client: RwLock::new(None),
             solver: RwLock::new(None),
         }
+    }
+
+    /// 配置会话复用策略（链式调用，默认关闭）
+    #[must_use]
+    pub const fn with_session_reuse(mut self, reuse: bool, idle_secs: u64) -> Self {
+        self.session_reuse = reuse;
+        self.session_idle_secs = idle_secs;
+        self
+    }
+
+    /// 回收会话：`max_idle = None` 表示全部回收（进程退出时用），
+    /// 否则只回收空闲超过该时长的会话。返回回收数量。
+    ///
+    /// 只会删除**本代理自己缓存**的会话；正在流式传输中的会话不在此列
+    /// （它们在 `Chat::active_sessions` 里，由流结束时的清理逻辑负责）。
+    pub async fn reap_sessions(&self, max_idle: Option<Duration>) -> usize {
+        let mut reaped = 0;
+        for entry in &self.accounts {
+            let account = entry.value();
+            let Some(session_id) = account.take_reapable_session(max_idle) else {
+                continue;
+            };
+            let client = account.client();
+            let token = account.token();
+            match client.delete_session(&token, &session_id).await {
+                Ok(()) => {
+                    reaped += 1;
+                    debug!(
+                        target: "ds_core::accounts",
+                        "回收空闲会话: account={}, session={session_id}",
+                        account.display_id()
+                    );
+                }
+                Err(e) => warn!(
+                    target: "ds_core::accounts",
+                    "回收会话失败: account={}, session={session_id}: {e}",
+                    account.display_id()
+                ),
+            }
+        }
+        reaped
     }
 
     pub async fn init(
@@ -435,6 +535,7 @@ impl AccountPool {
                 let client = client.clone();
                 let solver = solver.clone();
                 let sem = semaphore.clone();
+                let startup_health_check = self.startup_health_check;
                 async move {
                     let _permit = sem.acquire().await.expect("信号量未关闭");
                     let display_id = if creds.email.is_empty() {
@@ -442,7 +543,8 @@ impl AccountPool {
                     } else {
                         creds.email.clone()
                     };
-                    let account = match init_account(&creds, &client, &solver).await {
+                    let account =
+                        match init_account(&creds, &client, &solver, startup_health_check).await {
                         Ok(account) => {
                             info!(target: "ds_core::accounts", "Account {display_id} initialized successfully");
                             account
@@ -495,7 +597,7 @@ impl AccountPool {
             return Err(PoolError::AlreadyExists(display_id));
         }
 
-        let account = init_account(creds, client, solver).await?;
+        let account = init_account(creds, client, solver, self.startup_health_check).await?;
         let _id = account.display_id().to_string();
         self.accounts.insert(display_id.clone(), Arc::new(account));
         info!(target: "ds_core::accounts", "Account {display_id} added dynamically");
@@ -660,7 +762,7 @@ impl AccountPool {
             ));
         }
 
-        Self::re_login_account(&account, &client, &solver).await;
+        Self::re_login_account(&account, &client, &solver, self.startup_health_check).await;
 
         // 检查重登后状态
         let new_state = account.state();
@@ -687,9 +789,14 @@ impl AccountPool {
         }
     }
 
-    async fn re_login_account(account: &Account, client: &DsClient, solver: &PowSolver) {
+    async fn re_login_account(
+        account: &Account,
+        client: &DsClient,
+        solver: &PowSolver,
+        startup_health_check: bool,
+    ) {
         let display_id = account.display_id().to_string();
-        match try_init_account(&account.creds, client, solver).await {
+        match try_init_account(&account.creds, client, solver, startup_health_check).await {
             Ok(new_account) => {
                 // 更新 token
                 *account.token.write().unwrap() = new_account.token.read().unwrap().clone();
@@ -739,8 +846,22 @@ impl AccountPool {
                 for entry in &pool.accounts {
                     let account = entry.value();
                     if account.state() == AccountState::Error {
-                        Self::re_login_account(account, &client, &solver).await;
+                        Self::re_login_account(
+                            account,
+                            &client,
+                            &solver,
+                            pool.startup_health_check,
+                        )
+                        .await;
                     }
+                }
+
+                // 复用模式下顺带回收空闲会话（0 = 只在进程退出时删除）
+                if pool.session_reuse && pool.session_idle_secs > 0 {
+                    pool.reap_sessions(Some(tokio::time::Duration::from_secs(
+                        pool.session_idle_secs,
+                    )))
+                    .await;
                 }
             }
         });
@@ -796,8 +917,9 @@ async fn init_account(
     creds: &AccountConfig,
     client: &DsClient,
     solver: &PowSolver,
+    startup_health_check: bool,
 ) -> Result<Account, PoolError> {
-    try_init_account(creds, client, solver).await
+    try_init_account(creds, client, solver, startup_health_check).await
 }
 
 /// 账号的 X-Device-Id
@@ -819,6 +941,7 @@ async fn try_init_account(
     creds: &AccountConfig,
     client: &DsClient,
     solver: &PowSolver,
+    startup_health_check: bool,
 ) -> Result<Account, PoolError> {
     // 验证：email 和 mobile 至少一个非空
     if creds.email.is_empty() && creds.mobile.is_empty() {
@@ -915,21 +1038,33 @@ async fn try_init_account(
     let display_id = display_id_of(creds);
 
     // 健康检查：创建临时 session → 发送 test completion → 删除 session
-    let session_id = client.create_session(&token).await?;
-    if let Err(e) = health_check(&token, &session_id, client, solver, "default", display_id).await {
-        // 即使健康检查失败也要清理 session
-        if let Err(cleanup_err) = client.delete_session(&token, &session_id).await {
+    //
+    // `startup_health_check = false` 时整段跳过：真实客户端启动只建会话、不发消息，
+    // 而账号可用性已由「登录成功 + 禁言早检（biz_code 5）」保证。
+    if startup_health_check {
+        let session_id = client.create_session(&token).await?;
+        if let Err(e) =
+            health_check(&token, &session_id, client, solver, "default", display_id).await
+        {
+            // 即使健康检查失败也要清理 session
+            if let Err(cleanup_err) = client.delete_session(&token, &session_id).await {
+                log::warn!(
+                    target: "ds_core::accounts",
+                    "健康检查失败后清理 session {session_id} 也失败: {cleanup_err}"
+                );
+            }
+            return Err(e);
+        }
+        if let Err(e) = client.delete_session(&token, &session_id).await {
             log::warn!(
                 target: "ds_core::accounts",
-                "健康检查失败后清理 session {session_id} 也失败: {cleanup_err}"
+                "健康检查后清理 session {session_id} 失败: {e}"
             );
         }
-        return Err(e);
-    }
-    if let Err(e) = client.delete_session(&token, &session_id).await {
-        log::warn!(
+    } else {
+        debug!(
             target: "ds_core::accounts",
-            "健康检查后清理 session {session_id} 失败: {e}"
+            "Account {display_id} 跳过启动健康检查（startup_health_check = false）"
         );
     }
 
@@ -942,6 +1077,7 @@ async fn try_init_account(
         error_count: AtomicU8::new(0),
         creds: creds.clone(),
         window: SlidingWindowRateLimiter::new(),
+        session: Mutex::new(None),
         client: client.clone(),
     })
 }
@@ -1166,6 +1302,63 @@ mod tests {
         assert_eq!(shared[0].1.len(), 2);
     }
 
+    /// 复用会话槽：写入 / 读取 / 按 ID 精确清除
+    #[test]
+    fn cached_session_slot_roundtrip() {
+        let account = idle_account("cache@example.com");
+        assert!(account.cached_session_id().is_none(), "初始应为空");
+
+        account.put_cached_session("s-1");
+        assert_eq!(account.cached_session_id().as_deref(), Some("s-1"));
+
+        // 不匹配的 ID 不得误删
+        account.clear_cached_session("s-other");
+        assert_eq!(account.cached_session_id().as_deref(), Some("s-1"));
+
+        account.clear_cached_session("s-1");
+        assert!(account.cached_session_id().is_none());
+    }
+
+    /// 空闲回收：未超时不动，超时取出；`None` 表示无条件回收
+    #[test]
+    fn reapable_session_respects_idle_window() {
+        let account = idle_account("idle@example.com");
+        account.put_cached_session("s-2");
+
+        assert!(
+            account
+                .take_reapable_session(Some(Duration::from_mins(5)))
+                .is_none(),
+            "刚用过的会话不应被回收"
+        );
+        assert_eq!(
+            account.take_reapable_session(None).as_deref(),
+            Some("s-2"),
+            "退出时应无条件回收"
+        );
+        assert!(account.cached_session_id().is_none(), "回收后槽位应清空");
+    }
+
+    /// 会话策略默认关闭复用，且 `with_session_reuse` 只改策略相关字段
+    #[test]
+    fn session_reuse_defaults_off() {
+        let pool = AccountPool::new(10, true);
+        assert!(!pool.session_reuse, "默认必须保持「每轮建删」的历史行为");
+        assert_eq!(pool.session_idle_secs, 0);
+
+        let pool = pool.with_session_reuse(true, 900);
+        assert!(pool.session_reuse);
+        assert_eq!(pool.session_idle_secs, 900);
+        assert_eq!(pool.hourly_quota, 10, "其它配置不应被改动");
+    }
+
+    /// 空账号池回收会话是安全的空操作
+    #[tokio::test]
+    async fn reap_sessions_on_empty_pool_is_noop() {
+        let pool = AccountPool::new(0, true);
+        assert_eq!(pool.reap_sessions(None).await, 0);
+    }
+
     /// 构造一个可用的（Idle）测试账号
     fn idle_account(email: &str) -> Arc<Account> {
         Arc::new(Account {
@@ -1177,13 +1370,14 @@ mod tests {
             error_count: AtomicU8::new(0),
             creds: account(email, "dev"),
             window: SlidingWindowRateLimiter::new(),
+            session: Mutex::new(None),
             client: test_client(),
         })
     }
 
     #[test]
     fn pool_skips_accounts_that_exhausted_their_quota() {
-        let pool = AccountPool::new(2);
+        let pool = AccountPool::new(2, true);
         pool.accounts
             .insert("a@example.com".to_string(), idle_account("a@example.com"));
 
@@ -1199,7 +1393,7 @@ mod tests {
 
     #[test]
     fn pool_with_unlimited_quota_never_blocks() {
-        let pool = AccountPool::new(0);
+        let pool = AccountPool::new(0, true);
         pool.accounts
             .insert("a@example.com".to_string(), idle_account("a@example.com"));
         for i in 0..50 {
@@ -1209,7 +1403,7 @@ mod tests {
 
     #[test]
     fn exhausted_account_does_not_block_other_accounts() {
-        let pool = AccountPool::new(1);
+        let pool = AccountPool::new(1, true);
         pool.accounts
             .insert("a@example.com".to_string(), idle_account("a@example.com"));
         pool.accounts

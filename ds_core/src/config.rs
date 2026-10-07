@@ -25,9 +25,23 @@ pub struct DsCoreConfig {
     pub emulation: String,
     /// 是否在 completion 请求上回传 `x-hif-leim` 风控令牌
     ///
-    /// 真实客户端会轮询 `hif-leim.deepseek.com` 取令牌并在 SSE 请求上带回；
-    /// 关闭仅用于对照实验（正常使用务必保持开启）。
+    /// 真实客户端会轮询 `hif-leim.deepseek.com` / `hif-dliq.deepseek.com` 取令牌
+    /// 并在 SSE 请求上带回；关闭仅用于对照实验（正常使用务必保持开启）。
     pub hif_enabled: bool,
+    /// 启动时是否用一条 completion 做健康检查（默认 `true`）
+    ///
+    /// 真实客户端启动只做「登录 → check_device → 拉会话列表」，**不发消息**；
+    /// 置 `false` 可对齐该序列（账号可用性仍由登录 + 禁言早检保证），
+    /// 用于风控对照实验。
+    pub startup_health_check: bool,
+    /// 会话策略：`per_request`（默认，每轮新建、结束时删除）或 `reuse`
+    ///
+    /// 真实客户端一个会话长期复用、几乎不删。`reuse` 会保留会话并在后续请求中复用，
+    /// 空闲超过 `session_idle_secs` 才删除。**复用语义尚未用真实账号验证**，
+    /// 仅用于对照实验；未知取值按 `per_request` 处理。
+    pub session_policy: String,
+    /// 复用模式下会话的空闲回收秒数（0 = 只在进程退出时删除）
+    pub session_idle_secs: u64,
     pub proxy_url: Option<String>,
     pub model_types: Vec<String>,
     pub input_character_limits: Vec<u32>,

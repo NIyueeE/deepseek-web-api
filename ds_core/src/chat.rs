@@ -26,6 +26,8 @@ pub struct Chat {
     active_sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
     model_types: Vec<String>,
     input_character_limits: Vec<u32>,
+    /// 是否复用账号会话（真实客户端一个会话长期复用；默认关闭 = 每轮建删）
+    session_reuse: bool,
 }
 
 impl Chat {
@@ -36,7 +38,30 @@ impl Chat {
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
             model_types: config.model_types.clone(),
             input_character_limits: config.input_character_limits.clone(),
+            session_reuse: config.session_policy == "reuse",
         }
+    }
+
+    /// 取得本次请求使用的会话
+    ///
+    /// `session_reuse = true` 时优先复用账号上缓存的会话（返回 `reused = true`），
+    /// 否则新建（返回 `false`，由调用方用 `SessionGuard` 负责异常路径的删除）。
+    async fn acquire_session(
+        &self,
+        account: &crate::accounts::Account,
+    ) -> Result<(String, bool), crate::CoreError> {
+        if self.session_reuse
+            && let Some(session_id) = account.cached_session_id()
+        {
+            log::debug!(
+                target: "ds_core::accounts",
+                "复用会话: account={}, session={session_id}",
+                account.display_id()
+            );
+            return Ok((session_id, true));
+        }
+        let session_id = self.accounts.create_session(account).await?;
+        Ok((session_id, false))
     }
 
     /// 获取指定 model_type 的 input_character_limit

@@ -9,7 +9,7 @@
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
-use log::{debug, warn};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use thiserror::Error;
@@ -309,6 +309,8 @@ fn print_waf_hint() {
 
 /// 默认 HIF（风控令牌）取值端点
 const DEFAULT_HIF_LEIM_URL: &str = "https://hif-leim.deepseek.com/query";
+/// 第二个风控令牌端点（前端 `dliqPoller`；本网络常为 NXDOMAIN，取不到就跳过）
+const DEFAULT_HIF_DLIQ_URL: &str = "https://hif-dliq.deepseek.com/query";
 
 /// 传输层拟态档位（TLS/HTTP2 指纹 + 该档位自带的默认请求头）
 ///
@@ -399,10 +401,12 @@ impl ClientIdentity {
 /// HIF 风控令牌配置
 #[derive(Debug, Clone)]
 pub struct HifConfig {
-    /// 是否在 completion 请求上回传 `x-hif-leim`（关闭仅用于对照实验）
+    /// 是否在 completion 请求上回传 `x-hif-leim` / `x-hif-dliq`（关闭仅用于对照实验）
     pub enabled: bool,
-    /// 取令牌端点
+    /// `x-hif-leim` 取令牌端点
     pub leim_url: String,
+    /// `x-hif-dliq` 取令牌端点（真实客户端的第二个轮询器）
+    pub dliq_url: String,
 }
 
 impl Default for HifConfig {
@@ -410,6 +414,7 @@ impl Default for HifConfig {
         Self {
             enabled: true,
             leim_url: DEFAULT_HIF_LEIM_URL.to_string(),
+            dliq_url: DEFAULT_HIF_DLIQ_URL.to_string(),
         }
     }
 }
@@ -420,7 +425,7 @@ pub struct DsClient {
     api_base: String,
     wasm_url: String,
     identity: ClientIdentity,
-    /// HIF 风控令牌注册表（`x-hif-leim`，按设备身份分桶）；None = 已关闭
+    /// HIF 风控令牌注册表（`x-hif-leim` + `x-hif-dliq`，按设备身份分桶）；None = 已关闭
     hif: Option<std::sync::Arc<super::hif::HifRegistry>>,
 }
 
@@ -451,7 +456,12 @@ impl DsClient {
                 warn!(target: "ds_core::client", "客户端头构造失败，HIF 取令牌将不带拟态头: {e}");
                 wreq::header::HeaderMap::new()
             });
-            super::hif::HifRegistry::new(http.clone(), hif.leim_url.clone(), headers)
+            super::hif::HifRegistry::new(
+                http.clone(),
+                hif.leim_url.clone(),
+                hif.dliq_url.clone(),
+                headers,
+            )
         });
 
         Self {
@@ -491,19 +501,23 @@ impl DsClient {
         &self.identity.device_id
     }
 
-    /// 预热 HIF 风控令牌（真实客户端在应用启动时即开始轮询）
+    /// 预热 HIF 风控令牌（真实客户端在应用启动时即开始轮询两个端点）
     pub async fn warm_up_hif(&self) {
         if let Some(hif) = &self.hif {
-            hif.token_for(&self.identity.device_id).warm_up().await;
+            hif.warm_up(&self.identity.device_id).await;
         }
     }
 
-    /// 读取当前设备身份的 HIF 风控令牌（诊断用；缺失时触发一次取令牌）
+    /// 读取当前设备身份的 `x-hif-leim`（诊断用；缺失时触发一次取令牌）
     pub async fn hif_token(&self) -> Option<String> {
-        match &self.hif {
-            Some(hif) => hif.token_for(&self.identity.device_id).value().await,
-            None => None,
-        }
+        let hif = self.hif.as_ref()?;
+        let tokens = hif.tokens_for(&self.identity.device_id);
+        tokens
+            .values()
+            .await
+            .into_iter()
+            .find(|(kind, _)| *kind == super::hif::HifKind::Leim)
+            .map(|(_, value)| value)
     }
 
     /// 客户端通用请求头（登录与鉴权请求共用）
@@ -511,23 +525,14 @@ impl DsClient {
         self.identity.headers()
     }
 
-    /// 在 completion（SSE）请求上追加 `x-hif-leim`
+    /// 在 completion（SSE）请求上追加风控令牌头（`x-hif-leim` + `x-hif-dliq`）
     ///
-    /// 真实客户端只在 SSE 请求上带该头（前端 `addSSEHeader`），
-    /// 缺失时上游可直接判定为非官方客户端。
+    /// 真实客户端只在 SSE 请求上带这两个头（前端 `addSSEHeader`），
+    /// 且两个令牌由同一个头提供者一起附加；缺失时上游可直接判定为非官方客户端。
     async fn attach_hif(&self, headers: &mut wreq::header::HeaderMap) -> Result<(), ClientError> {
-        if let Some(hif) = &self.hif
-            && let Some(value) = hif.token_for(&self.identity.device_id).value().await
-        {
-            debug!(
-                target: "ds_core::client",
-                "attach x-hif-leim ({} chars)", value.len()
-            );
-            headers.insert(
-                "X-Hif-Leim",
-                wreq::header::HeaderValue::from_str(&value)
-                    .map_err(|e| ClientError::InvalidHeader(format!("X-Hif-Leim: {e}")))?,
-            );
+        if let Some(hif) = &self.hif {
+            let values = hif.tokens_for(&self.identity.device_id).values().await;
+            super::hif::insert_tokens(headers, &values)?;
         }
         Ok(())
     }
@@ -1024,12 +1029,12 @@ mod tests {
         // 设备视图与原客户端共享同一份 HIF 注册表（同一设备 = 同一份令牌）
         let base_hif = base.hif.as_ref().expect("hif enabled");
         assert!(std::sync::Arc::ptr_eq(
-            &base_hif.token_for("device-x"),
-            &a.hif.as_ref().unwrap().token_for("device-x")
+            &base_hif.tokens_for("device-x"),
+            &a.hif.as_ref().unwrap().tokens_for("device-x")
         ));
         assert!(!std::sync::Arc::ptr_eq(
-            &base_hif.token_for("device-x"),
-            &base_hif.token_for("device-y")
+            &base_hif.tokens_for("device-x"),
+            &base_hif.tokens_for("device-y")
         ));
     }
 

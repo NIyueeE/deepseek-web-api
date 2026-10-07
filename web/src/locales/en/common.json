@@ -188,6 +188,11 @@
     "quota": "Per-account Hourly Request Budget",
     "quotaDesc": "Upstream mutes accounts after a few hundred requests per hour, and muting is delayed. Accounts that exhaust this budget are skipped until the window rolls over (0 = unlimited). Add more accounts instead of raising this value.",
     "hifDesc": "Upstream expects the x-hif-leim risk-control token on completion requests (real clients poll it from hif-leim.deepseek.com). When disabled the header is not sent — this is for A/B experiments only, keep it enabled in normal use.",
+    "startupHealthCheck": "Startup health check",
+    "startupHealthCheckDesc": "Run one completion at startup to verify the account (the official client sends no message at startup). Disabling it matches the official startup sequence; account validity is still covered by a successful login + the mute early-check. For A/B experiments only.",
+    "sessionPolicy": "Session policy",
+    "sessionPolicyDesc": "per_request = new session per request, deleted when the stream ends (default, historical behaviour); reuse = keep and reuse the session per account to match the official client, but the reuse semantics are not yet verified with a real account — experiments only.",
+    "sessionIdleSecs": "Reused-session idle timeout (seconds, 0 = delete only on shutdown)",
     "quotaLabel": "Requests / hour / account"
   },
   "logs": {

@@ -188,6 +188,11 @@
     "quota": "Kuota Permintaan per Akun per Jam",
     "quotaDesc": "Upstream membisukan akun setelah beberapa ratus permintaan per jam, dan pembisuan bersifat tertunda. Akun yang kehabisan kuota dilewati hingga jendela bergulir (0 = tanpa batas).",
     "hifDesc": "Upstream mengharapkan token kontrol risiko x-hif-leim pada permintaan completion (klien resmi mengambilnya dari hif-leim.deepseek.com). Jika dimatikan, header tidak dikirim — hanya untuk eksperimen A/B, biarkan aktif pada penggunaan normal.",
+    "startupHealthCheck": "Pemeriksaan kesehatan saat mulai",
+    "startupHealthCheckDesc": "Menjalankan satu completion saat mulai untuk memverifikasi akun (klien resmi tidak mengirim pesan saat mulai). Menonaktifkannya menyerupai urutan resmi; validitas akun tetap dijamin oleh login sukses + deteksi mute. Hanya untuk eksperimen.",
+    "sessionPolicy": "Kebijakan sesi",
+    "sessionPolicyDesc": "per_request = sesi baru per permintaan, dihapus saat stream selesai (default, perilaku lama); reuse = menyimpan dan memakai ulang sesi per akun seperti klien resmi, namun semantiknya belum diverifikasi dengan akun nyata — hanya untuk eksperimen.",
+    "sessionIdleSecs": "Batas idle sesi yang dipakai ulang (detik, 0 = hapus hanya saat keluar)",
     "quotaLabel": "Permintaan / jam / akun"
   },
   "logs": {

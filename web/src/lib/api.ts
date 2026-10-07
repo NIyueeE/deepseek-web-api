@@ -202,6 +202,12 @@ export interface DsCoreConfig {
   client_timezone_offset: string;
   emulation: string;
   hif_enabled: boolean;
+  /** Startup health check (one completion at init); false = match the official client startup */
+  startup_health_check: boolean;
+  /** 'per_request' (new session per request, deleted at stream end) or 'reuse' (keep & reuse) */
+  session_policy: string;
+  /** Idle seconds before a reused session is deleted (0 = only at shutdown) */
+  session_idle_secs: number;
   model_types: string[];
   max_input_tokens: number[];
   max_output_tokens: number[];
@@ -253,6 +259,9 @@ const DEFAULTS = {
   clientTimezoneOffset: '28800',
   emulation: 'okhttp4_12',
   hifEnabled: true,
+  startupHealthCheck: true,
+  sessionPolicy: 'per_request',
+  sessionIdleSecs: 900,
   maxInputTokens: 1048576,
   maxOutputTokens: 384000,
   maxChars: 2621440,
@@ -307,6 +316,12 @@ export function normalizeConfig(raw: any): FullConfig {
       emulation: core.emulation ?? DEFAULTS.emulation,
       hif_enabled:
         typeof core.hif_enabled === 'boolean' ? core.hif_enabled : DEFAULTS.hifEnabled,
+      startup_health_check:
+        typeof core.startup_health_check === 'boolean'
+          ? core.startup_health_check
+          : DEFAULTS.startupHealthCheck,
+      session_policy: core.session_policy ?? DEFAULTS.sessionPolicy,
+      session_idle_secs: core.session_idle_secs ?? DEFAULTS.sessionIdleSecs,
       model_types: modelTypes,
       max_input_tokens: align(core.max_input_tokens, len, DEFAULTS.maxInputTokens),
       max_output_tokens: align(core.max_output_tokens, len, DEFAULTS.maxOutputTokens),

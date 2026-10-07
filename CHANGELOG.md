@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### 风控对齐（新增，**默认行为不变**，仅用于对照实验）
+
+- **双风控令牌 `x-hif-dliq`**：从官方前端 bundle 提取到真实客户端有**两个**同构轮询器
+  （`leimPoller` / `dliqPoller`，缓存键 `hif_leim_cached` / `hif_dliq_cached`，退避上限
+  `hif_max_retry_interval_secs` 默认 600s），由同一个头提供者一起附加。`ds_core` 现在
+  按「设备 → leim + dliq」分桶：两个端点各自缓存、各自退避（30s 起、指数、10 分钟封顶），
+  取到哪个就带哪个。实测 `hif-dliq.deepseek.com` 在本网络 NXDOMAIN（真实浏览器同样取不到），
+  因此**本网络下的行为与之前一致**，但在 dliq 可解析的地区不再少一个头
+- **`startup_health_check`（默认 `true`）**：置 `false` 时初始化跳过
+  「建会话 → 发 completion → 删会话」，对齐真实客户端的启动序列（只登录 / 校验设备 / 拉会话列表）；
+  账号可用性仍由登录成功 + 禁言早检保证
+- **`session_policy`（默认 `per_request`）+ `session_idle_secs`（默认 900）**：
+  设为 `reuse` 时在账号上复用会话（真实客户端一个会话长期复用、几乎不删），
+  正常结束后归还、请求失败即失效（`ReuseGuard`）、空闲超时由后台任务回收、
+  进程退出时全部回收。**复用语义尚未用真实账号验证**（同一会话内仍以
+  `parent_message_id = null` 发言），故默认保持每轮建删
+- 三个开关都进了 `config.example.toml`（含 docker 副本）、管理面板（校验测试覆盖）、
+  `AGENTS.md` 与本文档
+
 ### 验证更正（2026-10-07 13:10 UTC）
 
 - **撤回「v0.5.0 未触发处罚」的结论**：验证账号 `1460183479@qq.com` 在 **+3h17m 仍正常**、

@@ -614,6 +614,58 @@ export function SettingsPage() {
             </label>
             <p className="text-[11px] text-muted-foreground mt-1.5">{t('settings.hifDesc')}</p>
           </div>
+          <div>
+            <label
+              htmlFor="set-startup-health-check"
+              className="flex items-center gap-3 cursor-pointer select-none"
+            >
+              <input
+                id="set-startup-health-check"
+                type="checkbox"
+                checked={config.ds_core.startup_health_check}
+                onChange={(e) => update(['ds_core', 'startup_health_check'], e.target.checked)}
+                className="h-4 w-4 rounded border-input accent-primary cursor-pointer"
+              />
+              <span className="text-xs font-mono">
+                startup_health_check = {String(config.ds_core.startup_health_check)}
+              </span>
+            </label>
+            <p className="text-[11px] text-muted-foreground mt-1.5">
+              {t('settings.startupHealthCheckDesc')}
+            </p>
+          </div>
+          <div>
+            <label htmlFor="set-session-policy" className="text-xs font-mono">
+              {t('settings.sessionPolicy')}
+            </label>
+            <select
+              id="set-session-policy"
+              value={config.ds_core.session_policy}
+              onChange={(e) => update(['ds_core', 'session_policy'], e.target.value)}
+              className="mt-1 w-full h-9 rounded-md border border-input bg-transparent px-3 text-xs font-mono"
+            >
+              <option value="per_request">per_request</option>
+              <option value="reuse">reuse</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground mt-1.5">
+              {t('settings.sessionPolicyDesc')}
+            </p>
+          </div>
+          <div>
+            <label htmlFor="set-session-idle" className="text-xs font-mono">
+              {t('settings.sessionIdleSecs')}
+            </label>
+            <Input
+              id="set-session-idle"
+              type="number"
+              min={0}
+              value={config.ds_core.session_idle_secs}
+              onChange={(e) =>
+                update(['ds_core', 'session_idle_secs'], Number(e.target.value) || 0)
+              }
+              className="mt-1 h-9 text-xs font-mono"
+            />
+          </div>
         </CardContent>
       </Card>
 

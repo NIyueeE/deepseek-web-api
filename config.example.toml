@@ -93,13 +93,33 @@ port = 22217
 # /chat_session/create 上均实测可通过 WAF（无 202 challenge）。
 # emulation = "okhttp4_12"
 
-# 是否在 completion 请求上回传 x-hif-leim 风控令牌（默认 true）
+# 是否在 completion 请求上回传 x-hif-leim / x-hif-dliq 风控令牌（默认 true）
 #
-# 真实 Web/App 客户端启动后会轮询 hif-leim.deepseek.com 取一个短期令牌
-# （有效期由响应头 x-hif-ttl 给出，默认 600s），并在 SSE（completion）请求上
-# 以 x-hif-leim 头回传。缺少该头时上游可直接判定请求并非来自官方客户端 ——
+# 真实 Web/App 客户端启动后会**轮询两个**令牌端点（hif-leim / hif-dliq），
+# 各令牌有效期由响应头 x-hif-ttl 给出（默认 600s），并在 SSE（completion）请求上
+# 以 x-hif-leim / x-hif-dliq 头回传（两个都取到就都发，取不到的跳过）。
+# 缺少这些头时上游可直接判定请求并非来自官方客户端 ——
 # 这是第三方反代最容易漏掉的风控信号。关闭仅用于对照实验。
 # hif_enabled = true
+
+# 启动时是否用一条 completion 做健康检查（默认 true）
+#
+# 真实客户端启动只做「登录 → check_device → 拉会话列表」，**不发消息**；
+# 设为 false 可对齐该序列（账号可用性仍由登录成功 + 禁言早检保证）。
+# 仅用于风控对照实验，正常使用建议保持默认。
+# startup_health_check = true
+
+# 会话策略（默认 per_request）：
+#   per_request —— 每个请求新建会话，流结束后立即删除（历史行为）
+#   reuse       —— 在账号上复用会话，空闲超过 session_idle_secs 才删除
+#
+# 真实客户端一个会话长期复用、几乎不删；reuse 更贴近该行为，但
+# **复用语义（同一会话内以 parent_message_id = null 继续发言）尚未用真实账号验证**，
+# 因此默认保持 per_request，仅在对照实验时开启。
+# session_policy = "per_request"
+
+# 复用模式下会话的空闲回收秒数（0 = 只在进程退出时删除）
+# session_idle_secs = 900
 
 # API 基础地址（默认）
 # api_base = "https://chat.deepseek.com/api/v0"

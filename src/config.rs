@@ -78,6 +78,23 @@ pub struct DsCoreSection {
     /// 请求并非来自官方客户端。设为 `false` 仅用于对照实验。
     #[serde(default = "default_hif_enabled")]
     pub hif_enabled: bool,
+    /// 启动时是否用一条 completion 做健康检查（默认 `true`）
+    ///
+    /// 真实客户端启动只做「登录 → check_device → 拉会话列表」，不发消息。
+    /// 设为 `false` 可对齐该序列（账号可用性仍由登录 + 禁言早检保证），
+    /// 用于风控对照实验。
+    #[serde(default = "default_startup_health_check")]
+    pub startup_health_check: bool,
+    /// 会话策略：`per_request`（默认，每轮新建并在结束时删除）或 `reuse`
+    ///
+    /// 真实客户端一个会话长期复用、几乎不删；`reuse` 会把会话保留在账号上复用，
+    /// 空闲超过 `session_idle_secs` 才删除。**该模式尚未用真实账号验证过上游语义**
+    /// （复用会话时仍以 `parent_message_id = null` 发言），仅用于对照实验。
+    #[serde(default = "default_session_policy")]
+    pub session_policy: String,
+    /// 复用模式下会话的空闲回收秒数（`session_reuse = true` 时生效，0 = 只在进程退出时删除）
+    #[serde(default = "default_session_idle_secs")]
+    pub session_idle_secs: u64,
     /// 定义支持的模型类型列表，每种类型会自动映射为 OpenAI 的 model_id：deepseek-<type>
     #[serde(default = "default_model_types")]
     pub model_types: Vec<String>,
@@ -326,6 +343,24 @@ const fn default_hif_enabled() -> bool {
     true
 }
 
+/// 启动健康检查开关
+///
+/// 默认 `true`：保持历史行为（初始化时就验证账号能完成一次推理）。
+/// 设为 `false` 可对齐真实客户端的启动序列（只建会话/不发消息），用于对照实验。
+const fn default_startup_health_check() -> bool {
+    true
+}
+
+/// 会话策略（默认 `per_request` = 保持「每轮建删」的历史行为）
+fn default_session_policy() -> String {
+    "per_request".to_string()
+}
+
+/// 复用模式下会话空闲回收时间（默认 900s = 15 分钟）
+const fn default_session_idle_secs() -> u64 {
+    900
+}
+
 fn default_emulation() -> String {
     "okhttp4_12".to_string()
 }
@@ -505,6 +540,9 @@ impl Default for DsCoreSection {
             client_os: default_client_os(),
             emulation: default_emulation(),
             hif_enabled: default_hif_enabled(),
+            startup_health_check: default_startup_health_check(),
+            session_policy: default_session_policy(),
+            session_idle_secs: default_session_idle_secs(),
             model_types: default_model_types(),
             max_input_tokens: default_max_input_tokens(),
             max_output_tokens: default_max_output_tokens(),

@@ -78,6 +78,12 @@ pub struct DsCoreView {
     pub emulation: String,
     /// 是否在 completion 请求上回传 x-hif-leim 风控令牌
     pub hif_enabled: bool,
+    /// 启动时是否用一条 completion 做健康检查
+    pub startup_health_check: bool,
+    /// 会话策略：`per_request`（每轮建删）或 `reuse`（保留并复用）
+    pub session_policy: String,
+    /// 复用模式下会话空闲回收秒数（0 = 只在进程退出时删除）
+    pub session_idle_secs: u64,
     pub model_types: Vec<String>,
     pub max_input_tokens: Vec<u32>,
     pub max_output_tokens: Vec<u32>,
@@ -167,6 +173,9 @@ fn mask_config(config: &Config) -> AdminConfigResponse {
             client_timezone_offset: config.ds_core.client_timezone_offset.clone(),
             emulation: config.ds_core.emulation.clone(),
             hif_enabled: config.ds_core.hif_enabled,
+            startup_health_check: config.ds_core.startup_health_check,
+            session_policy: config.ds_core.session_policy.clone(),
+            session_idle_secs: config.ds_core.session_idle_secs,
             model_types: config.ds_core.model_types.clone(),
             max_input_tokens: config.ds_core.max_input_tokens.clone(),
             max_output_tokens: config.ds_core.max_output_tokens.clone(),

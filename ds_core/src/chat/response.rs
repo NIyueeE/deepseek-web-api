@@ -55,6 +55,10 @@ pub(crate) struct SessionHandle {
     pub(crate) session_id: String,
     pub(crate) message_id: i64,
     pub(crate) sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
+    /// 本次会话是否**复用**自账号缓存（true = 正常结束后归还而不是删除）
+    pub(crate) reuse: bool,
+    /// 复用会话所属账号（归还 / 失效时使用）
+    pub(crate) account: Option<Arc<crate::accounts::Account>>,
 }
 
 impl SessionHandle {
@@ -65,6 +69,10 @@ impl SessionHandle {
         let token = self.token.clone();
         let session_id = self.session_id.clone();
         let message_id = self.message_id;
+        // 只有「正常结束 + 复用模式」才把会话留在账号上；
+        // 客户端中断（!finished）时会话状态不明，按原逻辑删除更安全。
+        let keep = self.reuse && finished;
+        let account = self.account.clone();
 
         tokio::spawn(async move {
             if !finished {
@@ -75,6 +83,21 @@ impl SessionHandle {
                 if let Err(e) = client.stop_stream(&token, &payload).await {
                     log::warn!(target: "ds_core::accounts", "stop_stream failed: {e}");
                 }
+            }
+            if keep {
+                if let Some(account) = account {
+                    account.put_cached_session(&session_id);
+                    log::info!(
+                        target: "ds_core::accounts",
+                        "session_kept: id={session_id}, cleanup_ms={}",
+                        start.elapsed().as_millis()
+                    );
+                    return;
+                }
+                log::warn!(
+                    target: "ds_core::accounts",
+                    "复用模式但缺少账号引用，退化为删除: id={session_id}"
+                );
             }
             if let Err(e) = client.delete_session(&token, &session_id).await {
                 log::warn!(target: "ds_core::accounts", "delete_session failed: {e}");

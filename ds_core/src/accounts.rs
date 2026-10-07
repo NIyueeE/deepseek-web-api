@@ -74,7 +74,19 @@ impl Accounts {
         let wasm_bytes = client.get_wasm().await?;
         let solver = PowSolver::new(&wasm_bytes)?;
 
-        let pool = AccountPool::new(config.hourly_request_quota);
+        let session_reuse = match config.session_policy.as_str() {
+            "reuse" => true,
+            "per_request" => false,
+            other => {
+                log::warn!(
+                    target: "ds_core::accounts",
+                    "未知的 session_policy 取值 {other:?}，按 per_request（每轮建删）处理"
+                );
+                false
+            }
+        };
+        let pool = AccountPool::new(config.hourly_request_quota, config.startup_health_check)
+            .with_session_reuse(session_reuse, config.session_idle_secs);
         pool.init(account_creds, &client, &solver)
             .await
             .map_err(|e| match e {
@@ -245,6 +257,11 @@ impl Accounts {
 
     pub fn account_statuses_detailed(&self) -> Vec<AccountStatus> {
         self.pool.account_statuses_detailed()
+    }
+
+    /// 退出时回收所有缓存的会话（复用模式下会话不会自行删除）
+    pub async fn reap_all_sessions(&self) -> usize {
+        self.pool.reap_sessions(None).await
     }
 
     pub async fn add_account(&self, creds: &AccountConfig) -> Result<String, PoolError> {

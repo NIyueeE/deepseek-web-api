@@ -188,6 +188,11 @@
     "quota": "单账号每小时请求配额",
     "quotaDesc": "上游会在单账号每小时数百次请求后禁言，且禁言是延迟判定的。用尽配额的账号会在本小时内被跳过（0 = 不限制）。需要更高吞吐请增加账号数量，而不是抬高此值。",
     "hifDesc": "上游要求 completion 请求携带 x-hif-leim 风控令牌（真实客户端从 hif-leim.deepseek.com 轮询获取）。关闭后不再发送该头，仅用于对照实验，正常使用务必保持开启。",
+    "startupHealthCheck": "启动健康检查",
+    "startupHealthCheckDesc": "启动时用一条 completion 验证账号可用（真实客户端启动不发消息）。关闭后启动序列更贴近官方客户端，账号可用性仍由登录成功 + 禁言早检保证，仅用于对照实验。",
+    "sessionPolicy": "会话策略",
+    "sessionPolicyDesc": "per_request = 每个请求新建会话、流结束即删除（默认，历史行为）；reuse = 在账号上复用会话以贴近真实客户端，但复用语义尚未用真实账号验证，仅用于对照实验。",
+    "sessionIdleSecs": "复用会话空闲回收（秒，0 = 仅退出时删除）",
     "quotaLabel": "请求数 / 小时 / 账号"
   },
   "logs": {

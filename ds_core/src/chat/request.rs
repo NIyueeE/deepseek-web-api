@@ -85,6 +85,44 @@ impl Drop for SessionGuard {
     }
 }
 
+/// 复用会话的失效守卫
+///
+/// `session_reuse` 模式下会话是**长期复用**的：如果本次请求中途失败
+/// （`?` 提前返回、上游报错），下一次请求再用同一个会话只会继续失败 ——
+/// 因此这里在 Drop 时清掉账号上的缓存。流正常结束时调用方 `disarm()`，
+/// 交给 `SessionHandle` 决定「归还」还是「删除」。
+struct ReuseGuard {
+    account: std::sync::Arc<crate::accounts::Account>,
+    session_id: String,
+    armed: bool,
+}
+
+impl ReuseGuard {
+    fn new(account: std::sync::Arc<crate::accounts::Account>, session_id: &str) -> Self {
+        Self {
+            account,
+            session_id: session_id.to_string(),
+            armed: true,
+        }
+    }
+
+    const fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ReuseGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            log::debug!(
+                target: "ds_core::accounts",
+                "复用会话请求失败，清除缓存: id={}", self.session_id
+            );
+            self.account.clear_cached_session(&self.session_id);
+        }
+    }
+}
+
 // ── 公开类型 ──────────────────────────────────────────────────────────
 
 /// 文件载荷
@@ -242,16 +280,18 @@ impl Chat {
             "req={request_id} 分块写入: model_type=expert, account={account_id}"
         );
 
-        // 2. 创建 session（所有 chunk 共享）
-        let session_id = match self.accounts.create_session(&account).await {
-            Ok(id) => id,
+        // 2. 取 session（所有 chunk 共享；复用模式下沿用账号缓存的会话）
+        let (session_id, reused) = match self.acquire_session(&account).await {
+            Ok(v) => v,
             Err(e) => {
                 self.accounts.mark_error(&account_id);
                 return Err(e);
             }
         };
-        // 从这里起，任何提前返回都由守卫负责删除 session（兜底 `?` 传播的路径）
-        let mut session_guard = SessionGuard::new(account.client(), &token, &session_id);
+        // 新建的会话由 SessionGuard 兜底删除；复用的会话由 ReuseGuard 在失败时失效
+        let mut session_guard =
+            (!reused).then(|| SessionGuard::new(account.client(), &token, &session_id));
+        let mut reuse_guard = reused.then(|| ReuseGuard::new(account.clone(), &session_id));
 
         // 3. 按 75% limit 切分 prompt
         let limit = self.input_character_limit_for(&req.model_type);
@@ -479,8 +519,13 @@ impl Chat {
         let stream =
             futures::stream::once(futures::future::ready(Ok(Bytes::from(buf)))).chain(raw_stream);
 
-        // session 生命周期移交给 SessionHandle（流结束时删除）
-        session_guard.disarm();
+        // session 生命周期移交：正常结束时归还（复用）或删除（默认）
+        if let Some(g) = session_guard.as_mut() {
+            g.disarm();
+        }
+        if let Some(g) = reuse_guard.as_mut() {
+            g.disarm();
+        }
 
         Ok(ChatResponse {
             stream: Box::pin(ResponseStream::new(
@@ -492,6 +537,8 @@ impl Chat {
                     session_id,
                     message_id: stop_id,
                     sessions: self.active_sessions.clone(),
+                    reuse: reused,
+                    account: Some(account),
                 },
                 account_id.clone(),
             )),
@@ -531,21 +578,24 @@ impl Chat {
             request_id, req.model_type, account_id
         );
 
-        // 2. 创建临时 session
+        // 2. 取会话：复用模式下优先用账号上缓存的会话（真实客户端一个会话多发）
         let session_start = Instant::now();
-        let session_id = match self.accounts.create_session(&account).await {
-            Ok(id) => id,
+        let (session_id, reused) = match self.acquire_session(&account).await {
+            Ok(v) => v,
             Err(e) => {
                 self.accounts.mark_error(&account_id);
                 return Err(e);
             }
         };
         let session_create_ms = session_start.elapsed().as_millis();
-        // 从这里起，任何提前返回都由守卫负责删除 session
-        let mut session_guard = SessionGuard::new(account.client(), &token, &session_id);
+        // 新建的会话由 SessionGuard 兜底删除；复用的会话由 ReuseGuard 在失败时失效
+        let mut session_guard =
+            (!reused).then(|| SessionGuard::new(account.client(), &token, &session_id));
+        let mut reuse_guard = reused.then(|| ReuseGuard::new(account.clone(), &session_id));
         log::info!(
             target: "ds_core::accounts",
-            "req={request_id} session_created: id={session_id}, create_ms={session_create_ms}, account={account_id}"
+            "req={request_id} session_{}: id={session_id}, elapsed_ms={session_create_ms}, account={account_id}, reused={reused}",
+            if reused { "reused" } else { "created" }
         );
 
         // 3. 上传文件：先历史文件，再外部文件
@@ -755,8 +805,13 @@ impl Chat {
         let stream =
             futures::stream::once(futures::future::ready(Ok(Bytes::from(buf)))).chain(raw_stream);
 
-        // session 生命周期移交给 SessionHandle（流结束时删除）
-        session_guard.disarm();
+        // session 生命周期移交：正常结束时归还（复用）或删除（默认）
+        if let Some(g) = session_guard.as_mut() {
+            g.disarm();
+        }
+        if let Some(g) = reuse_guard.as_mut() {
+            g.disarm();
+        }
 
         Ok(ChatResponse {
             stream: Box::pin(ResponseStream::new(
@@ -768,6 +823,8 @@ impl Chat {
                     session_id,
                     message_id: stop_id,
                     sessions: self.active_sessions.clone(),
+                    reuse: reused,
+                    account: Some(account),
                 },
                 account_id.clone(),
             )),
