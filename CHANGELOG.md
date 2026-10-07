@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **wasmtime 48.0.2 → 48.0.5**：RUSTSEC-2026-0315 / 0316 / 0325 / **0327（critical,
+  9.3）** 等新公告要求 >= 48.0.4（或 >= 49.0.2），CI 的 `cargo audit` 因此失败。
+  保持 48.x 分支上升级到 48.0.5（PoW 求解链路已本地验证：WASM 加载/实例化/导出探测
+  与升级前一致；合成 challenge 在 48.0.2 与 48.0.5 上表现相同，均为构造值不可解，
+  非升级引入）
+
 ### Added
 
 - **`ds_core/examples/identity_probe.rs`**：客户端身份变体的 WAF 兼容性探测
