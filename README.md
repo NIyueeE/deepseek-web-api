@@ -23,7 +23,7 @@
 ## 项目亮点
 
 - **零成本 API 代理**：使用 DeepSeek 免费网页端，无需官方 API Key，即可获得 OpenAI / Anthropic 兼容接口
-- **三协议支持**：同时兼容 OpenAI Chat Completions、OpenAI Responses（`/v1/responses`）与 Anthropic Messages API，主流客户端即插即用
+- **三协议支持**：同时兼容 OpenAI Chat Completions、OpenAI Responses（`/v1/responses` + `GET /v1/responses/{id}` 检索）与 Anthropic Messages API，主流客户端即插即用
 - **工具调用就绪**：OpenAI function calling 完整实现，工具解析 + 三层自修复管道（文本修复 → JSON 修复 → 模型兜底），覆盖 10+ 异常格式
 - **文件上传就绪**：支持 OpenAI `file` / `image_url` content part 和 Anthropic `image` / `document` content block 的内联 data URL 文件自动上传到 DeepSeek 会话；
   HTTP URL 自动触发搜索模式，模型可直接访问链接内容
@@ -31,6 +31,9 @@
 - **Web 管理面板**：内置可视化面板，账号池状态、API Key 管理、请求日志、i18n 国际化（简体中文 / English / Bahasa Indonesia）、主题切换、响应式布局（桌面 / 平板 / 移动）与 PWA，配置热重载开箱即用
 - **Rust 实现**：单可执行文件 + 单 TOML 配置，跨平台原生高性能（Web 面板编译时嵌入，开箱即用）
 - **多账号池**：空闲最久优先轮转（DashMap 无锁读），支持水平扩展并发
+- **风控对齐（2026-10）**：按官方客户端抓包结果补齐 `x-hif-leim` 风控令牌（按设备缓存）、
+  设备身份按账号派生、传输层拟态档位可配（`emulation`，默认与 UA 自洽的原生 App 指纹）、
+  单账号滑动窗口配额与禁言早检；诊断入口 `hif_probe` / `account_check` / `identity_probe`
 
 ## 快速开始
 
@@ -118,6 +121,7 @@ Compose 配置见 [docker/docker-compose.yaml](./docker/docker-compose.yaml)。
 | GET  | `/health` | 健康检查 |
 | POST | `/v1/chat/completions` | 聊天补全（支持流式与工具调用） |
 | POST | `/v1/responses` | OpenAI Responses API（流式 + 工具调用 + `previous_response_id`） |
+| GET  | `/v1/responses/{id}` | 检索已保存的 Response 对象（进程内有界 + TTL 缓存；未命中 404） |
 | GET  | `/v1/models` | 模型列表 |
 | GET  | `/v1/models/{id}` | 模型详情 |
 | POST | `/anthropic/v1/messages` | Anthropic Messages（支持流式与工具调用） |

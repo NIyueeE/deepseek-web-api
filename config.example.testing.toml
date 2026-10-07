@@ -2,10 +2,15 @@
 # Copy to config.toml and fill in your test account credentials
 #
 # This config uses SAFE DEFAULTS for testing:
-# - Lower hourly quota (10 req/hour/account) to avoid triggering bans during tests
-# - Sliding window rate limiter (smoother than fixed window)
-# - Verbose logging for observability
-# - Short timeouts for faster feedback
+# - Lower hourly quota (10 req/hour/account)
+# - Sliding window rate limiter (smoother than a fixed window)
+# - Self-consistent native-app transport emulation (`emulation = "okhttp4_12"`)
+# - HIF risk token enabled (`hif_enabled = true`)
+#
+# NOTE (2026-10-07): low volume alone does NOT prevent upstream risk control —
+# always run a **control group** (another account used only through the official
+# browser) and check status with the browser at low frequency. See
+# TESTING_REPRODUCTION.md and docs/development.md.
 
 [server]
 host = "127.0.0.1"
@@ -77,8 +82,10 @@ default_search_enabled = true
 # === UPSTREAM API ===
 api_base = "https://chat.deepseek.com/api/v0"
 wasm_url = "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm"
-user_agent = "DeepSeek/2.1.1 Android/35"
-client_version = "2.0.0"
+user_agent = "DeepSeek/2.5.0 Android/35"
+client_version = "2.5.0"
+emulation = "okhttp4_12"
+hif_enabled = true
 client_platform = "android"
 client_locale = "zh_CN"
 

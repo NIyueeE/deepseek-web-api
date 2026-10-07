@@ -196,7 +196,8 @@ Agents SDK 的基本用法）：
 | Responses 内置工具执行（`web_search_call` / `file_search_call` / `code_interpreter_call` / `mcp_call`） | 上游不提供；`web_search_preview` 会退化为 DeepSeek 的搜索模式，但不产出对应的 output item |
 | `response.reasoning_summary_text.delta` 的 `summary_part` 细分 | 只产出单一段落（`summary_index: 0`） |
 | `store` 的跨进程持久化 | 使用进程内 TTL 缓存，见 [`responses-api.md`](./responses-api.md#previous_response_id-的取舍) |
-| `/v1/responses/{id}` 查询、`/v1/responses/input_tokens`、`background` 模式 | 未实现路由，返回 404 |
+| `/v1/responses/input_tokens`、`background` 模式 | 未实现路由，返回 404 |
+| `/v1/responses/{id}` 查询 | **已实现**（有界 + TTL 的进程内缓存；重启即失效，磁盘持久化待排期） |
 
 ---
 

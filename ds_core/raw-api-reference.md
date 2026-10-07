@@ -712,4 +712,9 @@ Content-Type: text/plain
 
 - US IP 被 DeepSeek CloudFront WAF 拦截（HTTP 202 / x-amzn-waf-action）
 - 配置非 US 代理即可绕过：`[proxy] url = "http://127.0.0.1:7890"`
-- `wreq` 使用 BoringSSL 自动模拟 Chrome 136 TLS 指纹
+- `wreq` 使用 BoringSSL，TLS/HTTP2 指纹由 `emulation` 配置选择：
+  `okhttp4_12`（默认，原生安卓 App，与默认 UA / `client_platform = android` 自洽）
+  或 `chrome136`（桌面 Chrome，需配合 web 身份）
+- 2026-10-07 实测：三种身份组合（安卓 App + Chrome136 / 全 Web Chrome / 安卓 App + OkHttp）
+  在 `/client/settings`、`/users/login`、`/chat/create_pow_challenge`、`/chat_session/create`
+  上均无 202 challenge —— 早期「桌面 Chrome UA 必被拦截」的结论已不适用

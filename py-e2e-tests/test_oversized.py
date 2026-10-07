@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """长上下文回退方案测试 —— 验证 oversized 检测 + 分块逻辑
 
-构造超阈值长文本分别测试 expert（分块 completion）和 default（文件上传）两种回退路径。
+构造超阈值长文本，测试 default 的「历史拆分 + 文件上传」回退路径；
+expert 的「分块 completion」路径仍保留（需上游重新开放 expert，当前 `enabled=false`，
+直接跑 expert 只会拿到空回复 —— 那属于上游状态，不是本代理的缺陷）。
 
 用法：
-  uv run python test_oversized.py
-  uv run python test_oversized.py --model deepseek-expert   # 只测 expert
+  uv run python test_oversized.py                       # 默认只测 default
+  uv run python test_oversized.py --model deepseek-expert   # 上游已下线，仅作历史参考
   uv run python test_oversized.py --show-output
-  uv run python test_oversized.py --model deepseek-expert --show-output
 """
 
 import argparse
@@ -121,7 +122,7 @@ def print_report(results: list[dict]) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="长上下文回退方案测试")
-    parser.add_argument("--model", type=str, default=None, help="只测试指定模型，如 deepseek-expert")
+    parser.add_argument("--model", type=str, default=None, help="只测试指定模型（默认 deepseek-default；expert 上游已下线）")
     parser.add_argument("--show-output", action="store_true", help="显示模型输出内容")
     parser.add_argument("--report", type=str, default=None, help="输出 JSON 报告路径")
     args = parser.parse_args()

@@ -41,7 +41,9 @@ def main():
     repair_sc = load_scenarios("scenarios/repair", None, args.filter)
     all_scenarios = basic_oai + basic_anth + repair_sc
 
-    models = args.models or ["deepseek-default", "deepseek-expert"]
+    # 上游已下线 expert / vision（/api/v0/client/settings 中 enabled=false），
+    # 默认只压测 default，避免产生大量假失败；需要时用 --models 显式指定。
+    models = args.models or ["deepseek-default"]
 
     port = config["port"]
     # 同 runner.py：anthropic>=1.5 使用 httpx2，不能传 http_client

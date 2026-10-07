@@ -1,172 +1,138 @@
 # Testing Reproduction Guide
 
-This document describes how to reproduce the account banning issue reported in [#112](https://github.com/NIyueeE/ds-free-api/issues/112) and collect meaningful data for analysis.
+本文件描述如何**可复现地**验证「本代理是否触发上游风控」。
+它是 2026-09-18 首版 runbook 的修订版：原版只比较「请求数 / 间隔」，
+2026-10-07 的实测证明那样得不出结论，因此加入了**对照组**与**低频复查**两条硬要求。
 
-## Scenario Overview
+## 结论先行（2026-10-07 实测）
 
-**Original report**: 4 accounts, unique device_id per account, 2 requests/account, 6-10s delay between requests, same IP at registration.
-**Result**: 1 banned in 10min, 2 banned in 12hrs, 1 survived.
+| 客户端 | 流量 | 结果 |
+|--------|------|------|
+| 旧版（无 `x-hif-leim`） | 初始化 + 1 次对话 + 3 次登录复查 | ❌ +19min `USER_IS_BANNED` |
+| 含 `x-hif-leim` + 按账号设备身份 | 初始化 + 1 次对话 | ❌ +37min `USER_IS_BANNED` |
+| **仅官方浏览器（对照组）** | 登录 + 2 条消息，之后只打开页面 | ✅ **+3h 仍正常** |
 
-## Prerequisites
+**要点**：
 
-1. **4 DeepSeek accounts** with unique device_ids (captured from real browser login)
-2. **Server** running ds-free-api with test config
-3. **API key** configured in Admin UI
-4. **curl** or HTTP client for sending requests
+1. **低请求量不能防止风控**（每账号 1~2 次请求一样会被停用）；
+2. **必须有对照组**：同一天、同 IP、同类账号，只走官方浏览器 ——
+   否则无法区分「账号历史处罚」与「客户端被识别」；
+3. **不要高频登录复查**：账号 A 在 20 分钟内被登录复查 3 次，这本身不是正常用户行为，
+   可能参与触发。复查优先用**官方浏览器打开页面**读取状态；
+4. **已被处罚过的账号不能作为验证对象**（存在阶梯升级处罚：
+   1 天 → 3 天 → 8 天 → 永久）。要验证请用**全新账号**。
 
-## Configuration
+## 前置条件
 
-Use `config.example.testing.toml` as base:
+1. **2 个全新账号**（A 组跑本代理、B 组只用官方浏览器作对照）；
+2. 每个账号各自的 `device_id`：用**独立浏览器配置文件**登录一次
+   `https://chat.deepseek.com/sign_in`，从 `POST /api/v0/users/login` 请求体里复制
+   （`device_id` 不能伪造；缺失会被 `RISK_DEVICE_DETECTED` 拒绝）；
+3. 服务端：本仓库构建的二进制（**用发布产物更有意义**）。
+
+## 配置
+
+以 `config.example.testing.toml` 为起点：
 
 ```bash
 cp config.example.testing.toml config.toml
-# Edit config.toml and fill in your 4 test accounts
+# 填 A 组账号（独立 device_id）；hourly_request_quota = 10；emulation 用默认 okhttp4_12
 ```
 
-Key testing settings:
-- `hourly_request_quota = 10` (very conservative)
-- `default_search_enabled = true`
-- Only `model_types = ["default"]`
+A 组建议只放**一个**账号：这样「账号被封」与「客户端被识别」不会互相混淆。
 
-## Test Procedure
+## 步骤
 
-### 1. Start Server
-```bash
-RUST_LOG=ds_core::accounts=debug,adapter=debug cargo run
-```
-
-### 2. Verify Accounts Initialized
-Check logs for:
-```
-INFO ds_core::accounts Account test1@example.com initialized successfully
-INFO ds_core::accounts Account test2@example.com initialized successfully
-...
-```
-
-### 3. Send Requests (Sequential Per Account)
-
-For each account, send 2 requests with 6-10s delay:
+### 1. 先探不需要账号的两项（零账号流量）
 
 ```bash
-# Request 1 for all 4 accounts
-for i in {1..4}; do
-  curl -X POST http://127.0.0.1:22217/v1/chat/completions \
-    -H "Authorization: Bearer YOUR_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{"model": "deepseek-default", "messages": [{"role": "user", "content": "Test message '$i' - request 1"}]}'
-  sleep 2  # small gap between accounts
-done
-
-# Wait 6-10 seconds
-sleep 8
-
-# Request 2 for all 4 accounts
-for i in {1..4}; do
-  curl -X POST http://127.0.0.1:22217/v1/chat/completions \
-    -H "Authorization: Bearer YOUR_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{"model": "deepseek-default", "messages": [{"role": "user", "content": "Test message '$i' - request 2"}]}'
-  sleep 2
-done
+cargo run --example hif_probe                       # x-hif-leim 端点是否可达
+cargo run -p ds_core --example identity_probe       # 身份/WAF 兼容性
 ```
 
-### 4. Monitor for Bans
+### 2. 启动服务并确认初始化
 
-Watch server logs for:
-- `biz_code=5` (account muted)
-- `biz_code=11` (RISK_DEVICE_DETECTED)
-- `quota_exhausted` warnings
-- Session create/delete timing
-
-Check account status via Admin API:
 ```bash
-curl -H "Authorization: Bearer YOUR_ADMIN_JWT" \
-  http://127.0.0.1:22217/admin/api/account-statuses-detailed
+RUST_LOG=info,ds_core::client=debug,ds_core::accounts=debug just serve
 ```
 
-### 5. Extended Monitoring (12-24 hours)
+日志里应当能看到：
 
-Keep server running and periodically check:
-- Account status changes
-- Any delayed bans (original report: bans at 12hrs)
-
-## Data to Collect
-
-| Data Point | Source |
-|------------|--------|
-| Request timestamps per account | `ds_core::accounts` debug logs |
-| Session create/delete time | `session_created` / `session_deleted` logs |
-| PoW solve time | `pow_ms` in `sse_ready` log |
-| First byte latency | `completion_ms` in `sse_ready` log |
-| Upstream response codes | `biz_code` in error logs |
-| Account quota usage | `account-statuses-detailed` endpoint |
-| Request intervals | `recent_intervals` in account status |
-
-## Expected Log Patterns
-
-**Normal request flow:**
 ```
-INFO ds_core::accounts req=req-X session_created: id=..., create_ms=..., account=...
-INFO ds_core::accounts req=req-X sse_ready: resp_msg=..., pow_ms=..., completion_ms=..., session_create_ms=..., total_ms=...
-INFO ds_core::accounts session_deleted: id=..., finished=true, cleanup_ms=...
+DEBUG ds_core::client  hif token refreshed: url=https://hif-leim.deepseek.com/query, ttl=570s
+DEBUG ds_core::client  登录响应: code=0, … muted=Some(0)
+DEBUG ds_core::client  attach x-hif-leim (73 chars)
+INFO  ds_core::accounts Account … initialized successfully
 ```
 
-**Rate limit / quota:**
-```
-WARN ds_core::accounts Account X quota exhausted (used=10, limit=10), skipping
-WARN ds_core::accounts Account X reached the hourly request budget (10)
+### 3. 发 1~2 次真实请求
+
+```bash
+curl -s http://127.0.0.1:22217/v1/chat/completions \
+  -H "Authorization: Bearer <你的 API Key>" -H 'Content-Type: application/json' \
+  -d '{"model":"deepseek-default","messages":[{"role":"user","content":"你好，用一句话介绍杭州"}]}'
 ```
 
-**Upstream errors:**
+然后**停掉服务**（避免后台恢复任务产生额外请求）。
+
+### 4. 对照组（B 组）
+
+同一天用官方浏览器登录 B 组账号，发 2 条消息，之后只打开页面。
+
+### 5. 低频复查（关键）
+
+| 时间点 | A 组 | B 组 |
+|--------|------|------|
+| +30min | 浏览器打开 `chat.deepseek.com`，读账号状态 | 同 |
+| +2h | 同 | 同 |
+| +6h / +24h | 同 | 同 |
+
+- 优先**只用浏览器打开页面**（`localStorage` 里
+  `__appKit_@deepseek/chat_lastSessionValue` 的 `userIsMuted` 即状态，
+  页面被跳转到 `sign_in` 通常意味着会话失效/账号异常）；
+- 需要确认时，用浏览器**重新登录一次**即可看到官方提示
+  （如「由于违规次数过多，你的账户已被临时停用」）——这比 API 登录更接近正常行为；
+- **一天最多 3 次复查**。
+
+## 需要记录的数据
+
+- 每次请求的时间戳（UTC）与结果；
+- 复查时间点、`is_muted` / 官方提示原文；
+- 服务端日志中的 `hif token refreshed` / `attach x-hif-leim` / `muted=Some(…)`；
+- A 组与 B 组的**差异**（这才是结论来源）。
+
+## 预期日志（异常时）
+
 ```
-ERROR ds_core::accounts req=req-X SSE 流返回业务错误: biz_code=5, biz_msg=...
-ERROR ds_core::accounts health_check 检测到业务错误: account=X, response=...
+WARN  ds_core::accounts Account X is muted until Some(…) (detected at login)
+ERROR ds_core::accounts Account X 登录被终止性拒绝，已标记 Invalid 并停止重试: …
 ```
+
+> 新版本对 `biz_code=2/5/10/11` 这类**终止性**错误会立即置 `Invalid` 并停止重试 ——
+> 继续重试不会加速解禁，反而可能延长。
 
 ## Reporting Template
 
-When reporting results, include:
-
 ```markdown
-## Test Report - [Date]
+## 环境
+- 版本 / 部署方式：
+- 代理：
+- 账号数：A 组 __ 个（每个独立 device_id？是/否），B 组 __ 个
 
-### Setup
-- Accounts: 4 (email/device_id pairs)
-- Config: hourly_request_quota=10, sliding_window=true
-- Delay between requests: ~8s
-- Total requests per account: 2
+## A 组（本代理）
+| 时间(UTC) | 动作 | 结果 |
+|---|---|---|
+| | 初始化 | |
+| | 第 1 次请求 | |
+| +30min | 浏览器复查 | |
+| +2h | 浏览器复查 | |
 
-### Results
-| Account | Request 1 | Request 2 | Ban Time | Ban Reason |
-|---------|-----------|-----------|----------|------------|
-| acc1    | ✅ success | ✅ success | 10min    | biz_code=5 |
-| acc2    | ✅ success | ✅ success | 12hr     | biz_code=5 |
-| acc3    | ✅ success | ✅ success | 12hr     | biz_code=5 |
-| acc4    | ✅ success | ✅ success | survived | - |
+## B 组（仅官方浏览器，对照）
+| 时间(UTC) | 动作 | 结果 |
+|---|---|---|
 
-### Key Logs
-[Link to gist or paste relevant log sections]
-
-### Observations
-- [Any patterns noticed]
-- [Whether sliding window helped vs fixed window]
-- [Session create/delete frequency observations]
+## 结论
+- A/B 差异：
+- 官方提示原文（如有）：
+- 服务端日志片段（脱敏）：
 ```
-
-## Next Steps After Reproduction
-
-1. **Compare with fixed window** - temporarily revert to fixed window and re-run
-2. **Test coordinated retry** - trigger 429 and observe retry behavior
-3. **Test session reuse** - implement delayed session delete and re-run
-4. **Document findings** - post to GitHub issue with data
-
-## Safety Notes
-
-- **Never share credentials** in logs or reports
-- **Use separate device_ids** per account (critical!)
-- **Monitor bans closely** - stop test if accounts getting banned rapidly
-- **Backup accounts** - have spare accounts ready
-
-## Questions?
-
-Open an issue or discussion in the repo for help with setup.

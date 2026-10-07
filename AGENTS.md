@@ -281,6 +281,10 @@ marks the account `Invalid`. The states are `Idle` / `Busy` / `Error` / `Invalid
 
 Retries live in the background recovery task (`start_recovery_task`, every 60s): accounts in
 `Error` are re-logged-in, and after `MAX_ERROR_COUNT` (3) consecutive failures they become `Invalid`.
+**Terminal** login errors (`biz_code` 2 / 5 / 10 / 11 — wrong credentials, muted, banned,
+device rejected) mark the account `Invalid` immediately via `is_terminal_login_error`:
+retrying them only keeps hitting upstream, and the docs note that retrying a muted account
+can extend the mute.
 
 `update_title` exists in the raw client (`ds_core/src/accounts/client.rs`) but has **no call
 site** — do not describe it as part of the init flow.
@@ -379,11 +383,21 @@ Request fields mapped in `request/resolver.rs`:
   `x-hif-leim` token cache is keyed by that device id (`hif::HifRegistry`) — one device
   identity and one risk token per account, matching the real client.
 - **Hourly request quota** (`hourly_request_quota`, default 60, 0 = unlimited): enforced
-  per account in `AccountPool::get_account()` via a one-hour fixed window
-  (`RequestWindow` in `ds_core/src/accounts/pool.rs`). Accounts over budget are skipped;
-  if every account is over budget the request returns 429 instead of hammering upstream.
-  This exists because upstream mutes accounts after a few hundred requests per hour, and
-  muting is **delayed** — see `docs/development.md`.
+  per account in `AccountPool::get_account()` via a one-hour **sliding window**
+  (`SlidingWindowRateLimiter` in `ds_core/src/accounts/pool.rs`; PR #114 replaced the
+  earlier fixed window, which allowed bursts at window boundaries). Accounts over budget
+  are skipped; if every account is over budget the request returns 429 instead of
+  hammering upstream. This exists because upstream mutes accounts after a few hundred
+  requests per hour, and muting is **delayed** — see `docs/development.md`.
+- **Transport emulation** (`emulation`, default `okhttp4_12`): the TLS/HTTP2 fingerprint and
+  the profile's default request headers. `okhttp4_12` keeps the "native Android app"
+  identity self-consistent (no `sec-ch-ua*` / `sec-fetch-*`, `accept: */*`);
+  `chrome136` suits a web identity (Chrome UA + `client_platform = web` + `client_os = web`).
+  The 2026-09 note that "desktop Chrome UA is blocked by WAF 202" no longer holds — see
+  `docs/development.md` (2026-10-07 identity probe).
+- **HIF risk token** (`hif_enabled`, default true): `x-hif-leim`, fetched from
+  `hif-leim.deepseek.com` per device identity (TTL from `x-hif-ttl`) and attached to SSE
+  requests only. Disabling it is for A/B experiments only.
 
 ### Overloaded Retry
 
@@ -553,7 +567,7 @@ Follow `docs/code-style.md`:
 |-------|---------|--------------------|
 | WASM load failure | `PowError::Execution` on startup | DeepSeek recompiled WASM. PowSolver now uses dynamic export probing (no hardcoded symbols). Update `wasm_url` in `config.toml` if WASM URL changed |
 | WAF blocking (non-US) | AWS WAF Challenge response (status 202) | Configure a non-US proxy in `config.toml` `[proxy]` |
-| WAF blocking (fingerprint) | HTTP 403 or connection reset | `wreq` with BoringSSL automatically emulates Chrome 136 TLS fingerprint. If blocked, try updating `wreq` or switching emulation profile |
+| WAF blocking (fingerprint) | HTTP 403 / connection reset / 202 challenge | `wreq` uses BoringSSL; the fingerprint is chosen by `emulation` (`okhttp4_12` default, `chrome136` for a web identity). Verify the identity is self-consistent (UA ↔ `client_platform` ↔ emulation) with `cargo run -p ds_core --example identity_probe` — it hits only unauthenticated endpoints, no account traffic |
 | Account init failure | All accounts stuck in init | Bad credentials (login fails first) or rate-limited (too many sessions). Check `[accounts]` in config |
 | Login fails with `RISK_DEVICE_DETECTED` (biz_code 11) | `客户端错误: Business error: code=11, msg=RISK_DEVICE_DETECTED` during account init | DeepSeek requires a browser-registered device fingerprint. Capture `device_id` from a real browser login (`POST /api/v0/users/login`) and set it per account in `config.toml` / the admin panel |
 | Account init fails with `user is muted` (biz_code 5) | `账号配置错误: 账号异常(muted/limited)`, account left in `invalid` | The account is temporarily muted upstream (response carries `mute_until`, typically days). It cannot be recovered by re-login — stop using the account until `mute_until` passes; further retries do not speed it up. Muting is **delayed**, so "ran N requests without being muted" is not evidence that a change avoids risk control — see `docs/development.md` |
