@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-07
+
+> **验证边界**：本版把传输层拟态改成与 UA 自洽的原生 App 档位（消除「安卓 App UA +
+> Chrome/macOS client hints + 地址栏导航头」这组矛盾），并在 4 类端点上实测可通过 WAF。
+> **但端到端「能否规避封号」仍未验证**：三个测试账号先后被临时停用
+> （旧版 +19min、v0.6.0 +37min 均被 `USER_IS_BANNED`；仅用官方浏览器的对照组 2 小时
+> 以上仍正常）。因此本版是「按证据继续收敛」，不是「已验证安全」。
+> 若新档位在你的环境触发 WAF，可设 `emulation = "chrome136"` 回退（老行为）。
+
 ### Changed
 
 - **传输层拟态改为自洽的原生 App 档位（`emulation = "okhttp4_12"`，默认）**：
