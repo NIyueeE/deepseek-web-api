@@ -6,8 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-07
+
+> **验证边界（务必阅读）**：本版补齐了真实客户端必带、此前完全缺失的
+> `x-hif-leim` 风控令牌，并修掉了两个全局常量指纹。**但「能否规避封号」
+> 尚未被证明**：唯一的实测账号（9 月已累计多次违规）在最小流量后 19 分钟
+> 被官方判定 `USER_IS_BANNED`，提示语为「由于违规次数过多，你的账户已被
+> 临时停用」，属于阶梯升级处罚，无法归因于本次修复失败、也无法证明其有效。
+> 完整时间线与下一步实验设计见 `docs/development.md`。
+
 ### Added
 
+- **HIF 风控令牌 `x-hif-leim`（2026-10-07 抓包发现，本轮防封号的核心修复）**：
+  用真实浏览器对 `chat.deepseek.com` 做**完整对话流程**抓包后发现，真实客户端会
+  轮询 `GET https://hif-leim.deepseek.com/query`（**无鉴权**，返回
+  `data.biz_data.value`，有效期取响应头 `x-hif-ttl`，默认 600s），并在
+  **completion（SSE）请求**上以 `x-hif-leim` 头回传（前端源码中该头由
+  `addSSEHeader` 注入，且仅注入 SSE 请求）。
+  - `ds_core` 新增 `accounts/hif.rs`：按 TTL 缓存 + 到期前 30s 刷新 +
+    失败退避 60s，账号初始化时预热（真实客户端在应用启动时即开始轮询）
+  - 取令牌失败不阻断业务请求（与真实客户端轮询失败时的行为一致）
+  - 新配置项 `hif_enabled`（默认 `true`，管理面板设置页可关，**仅用于对照实验**）
+  - 这一项此前完全缺失：请求 `/chat/completion` 却不带该头，上游可直接判定
+    请求并非来自官方客户端 —— 与「每账号仅 2 次请求也被禁言」的实测现象吻合
 - **无头浏览器抓包对齐（2026-09-20 实测）**：用 Playwright 对
   `chat.deepseek.com` 真实登录流程抓包，逐项修正 `ds_core` 的客户端拟态：
   - 登录请求补齐全部 `x-*` 头：`X-Client-Bundle-Id` / `X-Device-Id` /
@@ -36,6 +57,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **设备 UUID 改为「每安装一个持久 UUID」**：`client_device_id` 留空时，
+  首次启动会生成随机 UUID 并写回配置文件（此前是按 `api_base` 确定性派生，
+  意味着**所有部署共用同一个 X-Device-Id**，上游可据此关联大量账号）。
+  文档与两份 `config.example.toml` 同步
+- **health_check 提示词不再固定**：此前固定发「只回复\`Hello, world!\`」——
+  这是所有部署共用的常量字符串，按 prompt 聚类即可关联大量账号；
+  现改为中性短提示词池中随机取一条
+- **登录 payload 字段对齐真实客户端**：`email` / `mobile` / `area_code`
+  固定发送（空值发空串，而非省略或 null）
 - **`device_id` 策略更正**：文档从「设备级、可复用于多个账号」改为
   **「每个账号使用独立 device_id」**。该指纹是设备级的，上游用它做关联与画像
 - **客户端拟态默认值升级**：`user_agent` 默认 `DeepSeek/2.1.1 Android/35` →

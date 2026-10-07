@@ -74,6 +74,8 @@ pub struct DsCoreView {
     pub client_device_id: String,
     pub client_device_model: String,
     pub client_timezone_offset: String,
+    /// 是否在 completion 请求上回传 x-hif-leim 风控令牌
+    pub hif_enabled: bool,
     pub model_types: Vec<String>,
     pub max_input_tokens: Vec<u32>,
     pub max_output_tokens: Vec<u32>,
@@ -161,6 +163,7 @@ fn mask_config(config: &Config) -> AdminConfigResponse {
             client_device_id: config.ds_core.client_device_id.clone(),
             client_device_model: config.ds_core.client_device_model.clone(),
             client_timezone_offset: config.ds_core.client_timezone_offset.clone(),
+            hif_enabled: config.ds_core.hif_enabled,
             model_types: config.ds_core.model_types.clone(),
             max_input_tokens: config.ds_core.max_input_tokens.clone(),
             max_output_tokens: config.ds_core.max_output_tokens.clone(),

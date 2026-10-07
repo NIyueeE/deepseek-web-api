@@ -77,6 +77,13 @@ Compose 配置见 [docker/docker-compose.yaml](./docker/docker-compose.yaml)。
 >
 > 因此现在**不建议依赖公共测试账号**。请使用自己的账号，并在 `config.toml` / 管理面板中为每个账号
 > 填写 `device_id`，否则登录会直接被风控拦截。
+>
+> **✅ 2026-10 更新：缺失的风控令牌已补齐。** 用真实浏览器抓包发现，官方客户端会在
+> `/chat/completion` 请求上带一个由 `hif-leim.deepseek.com` 下发的短期令牌
+> （`x-hif-leim`，有效期见响应头 `x-hif-ttl`，默认 600s）。本代理此前完全没有该头，
+> 上游无需任何行为统计即可判定请求来自非官方客户端 —— 与「每账号仅 2 次请求也被禁言」
+> 的实测现象吻合。v0.5.0 起 `ds_core` 会自动取令牌、按 TTL 刷新并附在 SSE 请求上
+> （`hif_enabled = true`，默认开启）。细节见 `docs/development.md`。
 
 #### 如何获取 `device_id`
 

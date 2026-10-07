@@ -23,9 +23,10 @@
 | `X-Client-Platform` | 客户端平台（默认 `android`） |
 | `X-Client-Locale` | 客户端语言区域（默认 `zh_CN`） |
 | `X-Client-Bundle-Id` | 固定 `com.deepseek.chat` |
-| `X-Device-Id` | 设备级 UUID；配置留空时按 `api_base` 确定性派生（重启不变），亦用于 `check_device` payload |
+| `X-Device-Id` | 设备级 UUID；配置留空时首启生成随机 UUID 并写回配置（每安装一个持久值），亦用于 `check_device` payload |
 | `X-Device-Model` | 设备型号，真实客户端发空串 |
 | `X-Client-Timezone-Offset` | 时区偏移，UTC+8 = `28800` |
+| `X-Hif-Leim` | **风控令牌，仅 completion（SSE）请求需要**，见下节 `0.4` |
 
 登录 payload 的 `os` 字段应与 `X-Client-Platform` 身份一致（`web` / `android`），
 由 `client_os` 配置（默认 `android`）。
@@ -165,6 +166,37 @@
 
 ---
 
+## 0.4 HIF 风控令牌 hif-leim / hif-dliq（2026-10-07 抓包）
+
+真实客户端启动时轮询两个**无鉴权**的风控令牌端点，并把值缓存进 localStorage
+（`hif_leim_cached` / `hif_dliq_cached`），随后在 SSE 请求上以请求头回传。
+
+- **URL**: `GET https://hif-leim.deepseek.com/query`（同构：`https://hif-dliq.deepseek.com/query`）
+- **请求头**: 与业务请求相同的客户端拟态头（`x-client-*` / UA / `accept: */*` /
+  `referer: https://chat.deepseek.com/`），**不带 `Authorization`**
+- **响应**:
+
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "biz_code": 0,
+    "biz_msg": "",
+    "biz_data": { "value": "ALytJQRzYqprAAjt5gs6SzkWIc40r551S4+1cQZ/o/Pmc8t6EoPdAu4=.bf4ojFDXrmksVRYz" }
+  }
+}
+```
+
+- **有效期**: 响应头 `x-hif-ttl`（秒，观测值 `600`）；前端按该值定时重新轮询
+  （失败时指数退避，1s 起、上限 `hif_max_retry_interval_secs` 默认 600s）
+- **使用位置**: `value` 以 `X-Hif-Leim` 头附加到 **`POST /chat/completion`**
+  （前端源码中为 `addSSEHeader`）；缺失该头时上游可判定请求并非官方客户端
+- `ds_core` 实现见 `ds_core/src/accounts/hif.rs`（TTL 缓存 + 失败退避 +
+  账号初始化预热）
+
+---
+
 ## 1. 创建会话 create_session
 
 - **URL**: `POST /api/v0/chat_session/create`
@@ -258,7 +290,8 @@
 ## 4. 对话完成 completion
 
 - **URL**: `POST /api/v0/chat/completion`
-- **请求头**: `Authorization`, `User-Agent`, `X-Ds-Pow-Response`（每次请求必须重新计算）
+- **请求头**: `Authorization`, `User-Agent`, `X-Ds-Pow-Response`（每次请求必须重新计算）,
+  **`X-Hif-Leim`（风控令牌，见 `0.4`；缺失即暴露非官方客户端）**
 - **请求体**:
 
 ```json
@@ -270,14 +303,18 @@
   "ref_file_ids": ["file-xxx"],
   "thinking_enabled": true,
   "search_enabled": true,
+  "action": null,
   "preempt": false
 }
 ```
 
 - `model_type`: `"expert"`（默认）| `"default"` | 等
 - `ref_file_ids`: 上传文件后返回的文件 ID 数组，会话级别记忆，后续 `edit_message` 无需重复传入
+- `action`: 2026-10 抓包中真实客户端固定发 `null`（会话内首次消息）
 - `preempt`: 预占模式（目前网页端未使用），默认 false
 - **Response**: `text/event-stream` SSE 流
+- 实测请求顺序：`create_pow_challenge` → `completion`；同一会话的后续消息复用
+  该 session 并带上一条响应的 `parent_message_id`
 
 ### SSE 事件格式
 

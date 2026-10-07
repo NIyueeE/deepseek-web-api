@@ -1,6 +1,7 @@
 //! DeepSeek HTTP 客户端 —— 原始 API 调用层
 //!
-//! 无状态管理：无缓存、无重试、无会话状态。
+//! 无状态管理：无缓存、无重试、无会话状态（唯一的状态是 HIF 风控令牌句柄，
+//! 缓存逻辑在 `hif.rs`，本模块只负责把它拼进 SSE 请求头）。
 //! 每个方法对应一个 REST 端点（详见 docs/ds-api-reference.md）。
 //! 流方法（completion/edit_message）返回原始字节流，由上层解析 SSE。
 //!
@@ -8,7 +9,7 @@
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
-use log::warn;
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use thiserror::Error;
@@ -101,15 +102,16 @@ impl<T: serde::de::DeserializeOwned> Envelope<T> {
     }
 }
 
+/// 登录 payload
+///
+/// 字段与真实客户端一一对应：`email` / `mobile` 二选一，另一个传空串
+/// （**不是省略也不是 null** —— 真实客户端固定发 6 个 key）。
 #[derive(Debug, Serialize)]
 pub struct LoginPayload {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mobile: Option<String>,
+    pub email: String,
+    pub mobile: String,
     pub password: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub area_code: Option<String>,
+    pub area_code: String,
     pub device_id: String,
     pub os: String,
 }
@@ -256,6 +258,8 @@ pub struct CompletionPayload {
     pub ref_file_ids: Vec<String>,
     pub thinking_enabled: bool,
     pub search_enabled: bool,
+    /// 真实客户端固定发送该字段（会话首条为 null）
+    pub action: Option<serde_json::Value>,
     pub preempt: bool,
 }
 
@@ -303,77 +307,32 @@ fn print_waf_hint() {
     warn!(target: "ds_core::client", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }
 
-#[derive(Clone)]
-pub struct DsClient {
-    http: wreq::Client,
-    api_base: String,
-    wasm_url: String,
-    user_agent: String,
-    client_version: String,
-    client_platform: String,
-    client_locale: String,
-    client_bundle_id: String,
-    /// 设备级 UUID（X-Device-Id 头 / check_device payload）
-    device_id: String,
-    device_model: String,
-    timezone_offset: String,
-    /// 登录 payload 的 os 字段值
-    client_os: String,
+/// 默认 HIF（风控令牌）取值端点
+const DEFAULT_HIF_LEIM_URL: &str = "https://hif-leim.deepseek.com/query";
+
+/// 客户端拟态身份（UA + x-client-* 请求头 + 登录 payload 的 os）
+#[derive(Debug, Clone, Default)]
+pub struct ClientIdentity {
+    pub user_agent: String,
+    pub client_version: String,
+    pub client_platform: String,
+    pub client_locale: String,
+    pub client_bundle_id: String,
+    /// X-Device-Id（设备级 UUID）；空 = 按 api_base 确定性派生（兜底，
+    /// 根 crate 会在首启生成随机 UUID 并写入配置）
+    pub device_id: String,
+    pub device_model: String,
+    pub timezone_offset: String,
+    /// 登录 payload 的 os 字段
+    pub client_os: String,
 }
 
-impl DsClient {
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        api_base: String,
-        wasm_url: String,
-        user_agent: String,
-        client_version: String,
-        client_platform: String,
-        client_locale: String,
-        client_bundle_id: String,
-        client_device_id: String,
-        client_device_model: String,
-        client_timezone_offset: String,
-        client_os: String,
-        proxy_url: Option<&str>,
-    ) -> Self {
-        let mut builder = wreq::Client::builder().emulation(Emulation::Chrome136);
-        if let Some(url) = proxy_url.and_then(|u| wreq::Proxy::all(u).ok()) {
-            builder = builder.proxy(url);
-        }
-        // 空 = 按 api_base 确定性派生，保证重启后设备身份不变
-        let device_id = if client_device_id.trim().is_empty() {
-            derive_device_uuid(api_base.as_bytes())
-        } else {
-            client_device_id.trim().to_string()
-        };
-        Self {
-            http: builder.build().expect("构建 HTTP 客户端失败"),
-            api_base,
-            wasm_url,
-            user_agent,
-            client_version,
-            client_platform,
-            client_locale,
-            client_bundle_id,
-            device_id,
-            device_model: client_device_model,
-            timezone_offset: client_timezone_offset,
-            client_os,
-        }
-    }
-
-    /// 登录 payload 使用的 os 值
-    pub(crate) fn client_os(&self) -> &str {
-        &self.client_os
-    }
-
-    /// 客户端通用请求头（登录与鉴权请求共用）
+impl ClientIdentity {
+    /// 客户端通用请求头（登录、鉴权请求与 HIF 取令牌共用）
     ///
     /// 对齐真实客户端（2026-09 抓包）：除 UA 外还带 7 个 x-* 头，
     /// 缺这些头会明显拉低「像真实客户端」的拟态保真度。
-    fn client_headers(&self) -> Result<wreq::header::HeaderMap, ClientError> {
+    fn headers(&self) -> Result<wreq::header::HeaderMap, ClientError> {
         let mut h = wreq::header::HeaderMap::new();
         let mut put = |name: &'static str, value: &str| -> Result<(), ClientError> {
             h.insert(
@@ -392,6 +351,119 @@ impl DsClient {
         put("X-Device-Model", &self.device_model)?;
         put("X-Client-Timezone-Offset", &self.timezone_offset)?;
         Ok(h)
+    }
+}
+
+/// HIF 风控令牌配置
+#[derive(Debug, Clone)]
+pub struct HifConfig {
+    /// 是否在 completion 请求上回传 `x-hif-leim`（关闭仅用于对照实验）
+    pub enabled: bool,
+    /// 取令牌端点
+    pub leim_url: String,
+}
+
+impl Default for HifConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            leim_url: DEFAULT_HIF_LEIM_URL.to_string(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct DsClient {
+    http: wreq::Client,
+    api_base: String,
+    wasm_url: String,
+    identity: ClientIdentity,
+    /// HIF 风控令牌（`x-hif-leim`）；None = 已关闭
+    hif: Option<std::sync::Arc<super::hif::HifToken>>,
+}
+
+impl DsClient {
+    #[must_use]
+    pub fn new(
+        api_base: String,
+        wasm_url: String,
+        mut identity: ClientIdentity,
+        hif: &HifConfig,
+        proxy_url: Option<&str>,
+    ) -> Self {
+        let mut builder = wreq::Client::builder().emulation(Emulation::Chrome136);
+        if let Some(url) = proxy_url.and_then(|u| wreq::Proxy::all(u).ok()) {
+            builder = builder.proxy(url);
+        }
+        // 空 = 按 api_base 确定性派生，保证重启后设备身份不变
+        if identity.device_id.trim().is_empty() {
+            identity.device_id = derive_device_uuid(api_base.as_bytes());
+        } else {
+            identity.device_id = identity.device_id.trim().to_string();
+        }
+
+        let http = builder.build().expect("构建 HTTP 客户端失败");
+        let hif = hif.enabled.then(|| {
+            let headers = identity.headers().unwrap_or_else(|e| {
+                warn!(target: "ds_core::client", "客户端头构造失败，HIF 取令牌将不带拟态头: {e}");
+                wreq::header::HeaderMap::new()
+            });
+            super::hif::HifToken::new(http.clone(), hif.leim_url.clone(), headers)
+        });
+
+        Self {
+            http,
+            api_base,
+            wasm_url,
+            identity,
+            hif,
+        }
+    }
+
+    /// 登录 payload 使用的 os 值
+    pub(crate) fn client_os(&self) -> &str {
+        &self.identity.client_os
+    }
+
+    /// 预热 HIF 风控令牌（真实客户端在应用启动时即开始轮询）
+    pub async fn warm_up_hif(&self) {
+        if let Some(hif) = &self.hif {
+            hif.warm_up().await;
+        }
+    }
+
+    /// 读取当前 HIF 风控令牌（诊断用；缺失时触发一次取令牌）
+    pub async fn hif_token(&self) -> Option<String> {
+        match &self.hif {
+            Some(hif) => hif.value().await,
+            None => None,
+        }
+    }
+
+    /// 客户端通用请求头（登录与鉴权请求共用）
+    fn client_headers(&self) -> Result<wreq::header::HeaderMap, ClientError> {
+        self.identity.headers()
+    }
+
+    /// 在 completion（SSE）请求上追加 `x-hif-leim`
+    ///
+    /// 真实客户端只在 SSE 请求上带该头（前端 `addSSEHeader`），
+    /// 缺失时上游可直接判定为非官方客户端。
+    async fn attach_hif(&self, headers: &mut wreq::header::HeaderMap) -> Result<(), ClientError> {
+        if let Some(hif) = &self.hif
+            && let Some(value) = hif.value().await
+        {
+            debug!(
+                target: "ds_core::client",
+                "attach x-hif-leim ({} chars)", value.len()
+            );
+            headers.insert(
+                "X-Hif-Leim",
+                wreq::header::HeaderValue::from_str(&value)
+                    .map_err(|e| ClientError::InvalidHeader(format!("X-Hif-Leim: {e}")))?,
+            );
+        }
+        Ok(())
     }
 
     fn auth_headers(&self, token: &str) -> Result<wreq::header::HeaderMap, ClientError> {
@@ -486,8 +558,8 @@ impl DsClient {
             ))
             .headers(self.auth_headers(token)?)
             .json(&serde_json::json!({
-                "device_id": self.device_id,
-                "device_model": self.device_model,
+                "device_id": self.identity.device_id,
+                "device_model": self.identity.device_model,
             }))
             .send()
             .await?;
@@ -571,10 +643,12 @@ impl DsClient {
         pow_response: &str,
         payload: &CompletionPayload,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes, ClientError>> + Send>>, ClientError> {
+        let mut headers = self.auth_headers_with_pow(token, pow_response)?;
+        self.attach_hif(&mut headers).await?;
         let resp = self
             .http
             .post(format!("{}{}", self.api_base, ENDPOINT_CHAT_COMPLETION))
-            .headers(self.auth_headers_with_pow(token, pow_response)?)
+            .headers(headers)
             .json(payload)
             .send()
             .await?;
@@ -598,10 +672,12 @@ impl DsClient {
         pow_response: &str,
         payload: &EditMessagePayload,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes, ClientError>> + Send>>, ClientError> {
+        let mut headers = self.auth_headers_with_pow(token, pow_response)?;
+        self.attach_hif(&mut headers).await?;
         let resp = self
             .http
             .post(format!("{}{}", self.api_base, ENDPOINT_CHAT_EDIT_MESSAGE))
-            .headers(self.auth_headers_with_pow(token, pow_response)?)
+            .headers(headers)
             .json(payload)
             .send()
             .await?;
@@ -710,11 +786,15 @@ impl DsClient {
     }
 }
 
-/// 由种子字节确定性派生设备 UUID（RFC 4122 v4 格式）
+/// 由种子字节确定性派生 UUID（RFC 4122 v4 格式）
 ///
-/// 真实客户端每个安装一个持久设备 UUID；代理侧多账号共享一个客户端实例，
-/// 因此按 api_base 派生：同一配置重启后设备身份不变（每次重启都变会呈现为
-/// 「无限多个新设备」，本身就是风控信号）。
+/// 两个用途：
+/// - `client_device_id` 未配置且根 crate 未能持久化随机 UUID 时的**兜底**
+///   （此时按 api_base 派生，至少保证重启后设备身份不变）；
+/// - [`random_device_uuid`] 的格式化实现。
+///
+/// 注意：按 `api_base` 派生意味着**所有部署共用同一个 X-Device-Id**，
+/// 因此根 crate 会在首启生成随机 UUID 并写入配置文件，仅在无法写入时回退到派生值。
 pub(crate) fn derive_device_uuid(seed: &[u8]) -> String {
     fn fnv1a(data: &[u8], offset: u64) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ offset;
@@ -753,6 +833,28 @@ pub(crate) fn derive_device_uuid(seed: &[u8]) -> String {
     )
 }
 
+/// 生成随机设备 UUID（RFC 4122 v4）
+///
+/// 用于「每个安装一个持久设备 UUID」：调用方（根 crate）在首次运行时生成
+/// 并写入配置文件。不引入 rand 依赖：混入高精度时间、进程号、栈地址与
+/// 进程内计数器后按 v4 格式派生，足以保证不同部署互不相同。
+#[must_use]
+pub fn random_device_uuid() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let marker = 0u8;
+    let mut seed = Vec::with_capacity(40);
+    seed.extend_from_slice(&nanos.to_be_bytes());
+    seed.extend_from_slice(&u64::from(std::process::id()).to_be_bytes());
+    seed.extend_from_slice(&(std::ptr::from_ref(&marker) as usize as u64).to_be_bytes());
+    seed.extend_from_slice(&COUNTER.fetch_add(1, Ordering::Relaxed).to_be_bytes());
+    derive_device_uuid(&seed)
+}
+
 /// 解析 check_device 的 rotate 指令，提取新令牌
 ///
 /// 形态未知（未观测到非 null 值）：兼容字符串与 `{"token": "..."}` 对象，
@@ -773,19 +875,26 @@ pub(crate) fn extract_rotate_token(rotate: &serde_json::Value) -> Option<String>
 mod tests {
     use super::*;
 
+    fn test_identity() -> ClientIdentity {
+        ClientIdentity {
+            user_agent: "DeepSeek/2.5.0 Android/35".to_string(),
+            client_version: "2.5.0".to_string(),
+            client_platform: "android".to_string(),
+            client_locale: "zh_CN".to_string(),
+            client_bundle_id: "com.deepseek.chat".to_string(),
+            device_id: String::new(),
+            device_model: String::new(),
+            timezone_offset: "28800".to_string(),
+            client_os: "android".to_string(),
+        }
+    }
+
     fn test_client() -> DsClient {
         DsClient::new(
             "https://chat.deepseek.com/api/v0".to_string(),
             "https://example.com/x.wasm".to_string(),
-            "DeepSeek/2.5.0 Android/35".to_string(),
-            "2.5.0".to_string(),
-            "android".to_string(),
-            "zh_CN".to_string(),
-            "com.deepseek.chat".to_string(),
-            String::new(),
-            String::new(),
-            "28800".to_string(),
-            "android".to_string(),
+            test_identity(),
+            &HifConfig::default(),
             None,
         )
     }
@@ -835,24 +944,34 @@ mod tests {
 
     #[test]
     fn device_id_config_override_wins() {
+        let mut identity = test_identity();
+        identity.device_id = "11111111-2222-4333-8444-555555555555".to_string();
         let c = DsClient::new(
             "https://chat.deepseek.com/api/v0".to_string(),
             "https://example.com/x.wasm".to_string(),
-            "UA".to_string(),
-            "2.5.0".to_string(),
-            "android".to_string(),
-            "zh_CN".to_string(),
-            "com.deepseek.chat".to_string(),
-            "11111111-2222-4333-8444-555555555555".to_string(),
-            String::new(),
-            "28800".to_string(),
-            "android".to_string(),
+            identity,
+            &HifConfig::default(),
             None,
         );
         assert_eq!(
             c.client_headers().unwrap()["x-device-id"],
             "11111111-2222-4333-8444-555555555555"
         );
+    }
+
+    #[test]
+    fn hif_can_be_disabled() {
+        let c = DsClient::new(
+            "https://chat.deepseek.com/api/v0".to_string(),
+            "https://example.com/x.wasm".to_string(),
+            test_identity(),
+            &HifConfig {
+                enabled: false,
+                ..HifConfig::default()
+            },
+            None,
+        );
+        assert!(c.hif.is_none(), "关闭后不应构造 HIF 令牌提供者");
     }
 
     #[test]

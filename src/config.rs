@@ -51,7 +51,7 @@ pub struct DsCoreSection {
     /// X-Client-Bundle-Id 请求头（真实客户端固定 com.deepseek.chat）
     #[serde(default = "default_client_bundle_id")]
     pub client_bundle_id: String,
-    /// X-Device-Id 请求头（设备级 UUID；留空按 api_base 确定性派生，重启不变）
+    /// X-Device-Id 请求头（设备级 UUID；留空时首启生成随机 UUID 并写回本配置）
     #[serde(default)]
     pub client_device_id: String,
     /// X-Device-Model 请求头（真实 Web 客户端发空串）
@@ -63,6 +63,13 @@ pub struct DsCoreSection {
     /// 登录 payload 的 os 字段（与 UA 身份保持一致：web / android）
     #[serde(default = "default_client_os")]
     pub client_os: String,
+    /// 是否在 completion 请求上回传 `x-hif-leim` 风控令牌（默认 true）
+    ///
+    /// 真实 Web/App 客户端会轮询 `hif-leim.deepseek.com` 取令牌，并在 SSE
+    /// （completion）请求上以 `x-hif-leim` 头回传；缺少该头时上游可直接判定
+    /// 请求并非来自官方客户端。设为 `false` 仅用于对照实验。
+    #[serde(default = "default_hif_enabled")]
+    pub hif_enabled: bool,
     /// 定义支持的模型类型列表，每种类型会自动映射为 OpenAI 的 model_id：deepseek-<type>
     #[serde(default = "default_model_types")]
     pub model_types: Vec<String>,
@@ -307,6 +314,10 @@ fn default_client_os() -> String {
     "android".to_string()
 }
 
+fn default_hif_enabled() -> bool {
+    true
+}
+
 /// HTTP 服务器配置（必填）
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerConfig {
@@ -404,7 +415,29 @@ impl Config {
             return Ok((default, path));
         }
 
-        let config = Self::load(&path)?;
+        let mut config = Self::load(&path)?;
+
+        // 首次运行生成并持久化设备 UUID（X-Device-Id）
+        //
+        // 真实客户端「每个安装一个持久 UUID」；若留空由客户端按 api_base 派生，
+        // 所有部署会共用同一个设备身份（上游可据此关联大量账号）。
+        // 生成后写入配置文件，重启与热重载都保持同一身份。
+        if config.ds_core.client_device_id.trim().is_empty() {
+            config.ds_core.client_device_id = ds_core::random_device_uuid();
+            match config.save(&path) {
+                Ok(()) => log::info!(
+                    target: "config",
+                    "generated persistent device uuid (client_device_id) into {}",
+                    path.display()
+                ),
+                Err(e) => log::warn!(
+                    target: "config",
+                    "生成 client_device_id 后写入配置失败（本次运行仍会使用该值，重启后会变化）: {}",
+                    e
+                ),
+            }
+        }
+
         Ok((config, path))
     }
 
@@ -480,6 +513,7 @@ impl Default for DsCoreSection {
             client_device_model: String::new(),
             client_timezone_offset: default_client_timezone_offset(),
             client_os: default_client_os(),
+            hif_enabled: default_hif_enabled(),
             model_types: default_model_types(),
             max_input_tokens: default_max_input_tokens(),
             max_output_tokens: default_max_output_tokens(),

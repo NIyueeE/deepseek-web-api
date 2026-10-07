@@ -3,6 +3,7 @@
 //! chat 模块通过此门面访问账号相关能力。
 
 mod client;
+mod hif;
 pub(crate) mod pool;
 mod pow;
 
@@ -13,11 +14,35 @@ use tokio::sync::RwLock;
 use crate::CoreError;
 use crate::config::{AccountConfig, DsCoreConfig};
 pub use client::{
-    ChatSessionInfo, ClientError, CompletionPayload, DsClient, FetchSessionsData, LoginPayload,
-    StopStreamPayload,
+    ChatSessionInfo, ClientError, ClientIdentity, CompletionPayload, DsClient, FetchSessionsData,
+    HifConfig, LoginPayload, StopStreamPayload, random_device_uuid,
 };
 pub use pool::{AccountGuard, AccountPool, AccountStatus, PoolError};
 pub use pow::{PowError, PowSolver};
+
+/// 由配置构造 HTTP 客户端（客户端拟态身份 + HIF 风控令牌端点）
+fn build_client(config: &DsCoreConfig) -> DsClient {
+    DsClient::new(
+        config.api_base.clone(),
+        config.wasm_url.clone(),
+        ClientIdentity {
+            user_agent: config.user_agent.clone(),
+            client_version: config.client_version.clone(),
+            client_platform: config.client_platform.clone(),
+            client_locale: config.client_locale.clone(),
+            client_bundle_id: config.client_bundle_id.clone(),
+            device_id: config.client_device_id.clone(),
+            device_model: config.client_device_model.clone(),
+            timezone_offset: config.client_timezone_offset.clone(),
+            client_os: config.client_os.clone(),
+        },
+        &HifConfig {
+            enabled: config.hif_enabled,
+            ..HifConfig::default()
+        },
+        config.proxy_url.as_deref(),
+    )
+}
 
 /// 账号模块的统一入口
 ///
@@ -36,20 +61,11 @@ impl Accounts {
         config: &DsCoreConfig,
         account_creds: Vec<AccountConfig>,
     ) -> Result<Arc<Self>, CoreError> {
-        let client = DsClient::new(
-            config.api_base.clone(),
-            config.wasm_url.clone(),
-            config.user_agent.clone(),
-            config.client_version.clone(),
-            config.client_platform.clone(),
-            config.client_locale.clone(),
-            config.client_bundle_id.clone(),
-            config.client_device_id.clone(),
-            config.client_device_model.clone(),
-            config.client_timezone_offset.clone(),
-            config.client_os.clone(),
-            config.proxy_url.as_deref(),
-        );
+        let client = build_client(config);
+
+        // 真实客户端在应用启动时即开始轮询 HIF 令牌，这里同步预热，
+        // 避免首个业务请求才现取（首次取令牌失败也不阻断启动）
+        client.warm_up_hif().await;
 
         let wasm_bytes = client.get_wasm().await?;
         let solver = PowSolver::new(&wasm_bytes)?;
@@ -282,20 +298,8 @@ impl Accounts {
     }
 
     pub async fn reload_config(&self, config: &DsCoreConfig) -> Result<(), CoreError> {
-        let client = DsClient::new(
-            config.api_base.clone(),
-            config.wasm_url.clone(),
-            config.user_agent.clone(),
-            config.client_version.clone(),
-            config.client_platform.clone(),
-            config.client_locale.clone(),
-            config.client_bundle_id.clone(),
-            config.client_device_id.clone(),
-            config.client_device_model.clone(),
-            config.client_timezone_offset.clone(),
-            config.client_os.clone(),
-            config.proxy_url.as_deref(),
-        );
+        let client = build_client(config);
+        client.warm_up_hif().await;
         let wasm_bytes = client.get_wasm().await?;
         let solver = PowSolver::new(&wasm_bytes)?;
 

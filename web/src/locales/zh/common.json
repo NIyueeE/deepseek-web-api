@@ -185,6 +185,7 @@
     "searchModeDesc": "请求未携带 web_search_options 时是否开启联网搜索。关闭后严格遵循 OpenAI 语义，并避免注入 DeepSeek 的搜索系统提示词。",
     "quota": "单账号每小时请求配额",
     "quotaDesc": "上游会在单账号每小时数百次请求后禁言，且禁言是延迟判定的。用尽配额的账号会在本小时内被跳过（0 = 不限制）。需要更高吞吐请增加账号数量，而不是抬高此值。",
+    "hifDesc": "上游要求 completion 请求携带 x-hif-leim 风控令牌（真实客户端从 hif-leim.deepseek.com 轮询获取）。关闭后不再发送该头，仅用于对照实验，正常使用务必保持开启。",
     "quotaLabel": "请求数 / 小时 / 账号"
   },
   "logs": {

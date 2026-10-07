@@ -59,7 +59,7 @@ match_bool = "deny"
 
 [package]
 name = "ds-free-api"
-version = "0.4.0"
+version = "0.5.0"
 license = "GPL-3.0-only"
 edition = "2024"
 
@@ -74,7 +74,7 @@ bcrypt = "0.19.3"
 bytes = "1"
 chrono = "0.4.44"
 dashmap = "6"
-ds_core = { path = "ds_core", version = "0.4.0" }
+ds_core = { path = "ds_core", version = "0.5.0" }
 env_logger = { version = "0.11.10", features = ["auto-color"] }
 futures = "0.3.32"
 hmac = "0.13.0"

@@ -440,3 +440,130 @@ just e2e-basic --report result.json
 - 下一步的正确实验：为每个账号各注册一个真实 `device_id`（消除指纹混杂）后按上表流程重跑。
   在该混杂因素消除之前，「配额 + 标准 ChatML 注入」都不能称为已验证的安全策略。
 
+## 2026-10-07：抓包发现缺失的风控令牌 `x-hif-leim`（本轮防封号核心）
+
+前面所有缓解措施（配额、prompt 格式、并发、每账号 `device_id`）都只是「降低可疑度」，
+因为它们都在**猜**上游看什么。这一轮换了个做法：用 Playwright 跑**真实浏览器 + 完整对话流程**，
+把真实客户端发出的每一个请求逐字段拉出来和 `ds_core` 对比 —— 结果发现一个此前完全缺失的头部。
+
+### 抓包事实（真实浏览器，`chat.deepseek.com`）
+
+**1. 启动时序**（登录前后）：
+
+```
+GET  /api/v0/client/settings?did=<uuid>&scope=main|model|web_upgrade|provider|banner
+POST /api/v0/users/login                {email,mobile:"",password,area_code:"",device_id,os:"web"}
+POST /api/v0/users/auth_token/check_device
+POST /api/v0/chat_session/create        → 会话在登录后立即创建并**长期复用**
+GET  /api/v0/chat_session/fetch_page?lte_cursor.pinned=false
+POST /api/v0/client/settings/report
+```
+
+**2. 风控令牌端点**（**无鉴权**，前端源码中由 `addSSEHeader` 注入 SSE 请求）：
+
+```
+GET  https://hif-leim.deepseek.com/query     ← 真实客户端启动即轮询，之后按 TTL 续取
+→ {"code":0,"data":{"biz_code":0,"biz_data":{"value":"<base64>.<base64>"}}}
+  响应头 x-hif-ttl: 600（秒）
+```
+
+**3. completion 请求**（唯一带该头的请求）：
+
+```json
+{"chat_session_id":"...","parent_message_id":null,"model_type":"default",
+ "prompt":"...","ref_file_ids":[],"thinking_enabled":false,"search_enabled":true,
+ "action":null,"preempt":false}
+```
+
+请求头（除常规 `x-client-*` 外）：
+
+```
+x-ds-pow-response: <PoW 解>
+x-hif-leim: <来自 hif-leim.deepseek.com 的令牌>
+```
+
+### 为什么这能解释此前的全部现象
+
+- `/chat/completion` 上**没有** `x-hif-leim` ⇒ 上游不需要任何行为统计，就能直接判定
+  请求不是官方客户端发的；
+- 这解释了「每账号仅 2 次请求、间隔 6–10 秒、独立 `device_id` 仍被禁言」（issue #112）；
+- 也解释了「改 prompt 格式 / 降配额 / 换 UA 都没用」——这些都不是判定依据；
+- 第三方反代项目（本仓库、Python 重写版等）全部漏掉了这个头，所以**所有**反代都在被禁言。
+
+### 本轮实现（`ds_core`）
+
+1. `ds_core/src/accounts/hif.rs`：按 `x-hif-ttl` 缓存令牌，到期前 30s 刷新，
+   失败退避 60s；账号初始化时预热（对应真实客户端的启动轮询）；
+   取令牌失败不阻断业务请求（真实客户端轮询失败时同样只是不带该头）。
+2. `x-hif-leim` 只加在 completion / edit_message（即 SSE 请求）上，与真实客户端一致。
+3. 新配置项 `hif_enabled`（默认 `true`，**仅用于对照实验**）。
+4. 顺带修掉两个「全局常量指纹」：
+   - `client_device_id` 留空时改为**首启生成随机 UUID 并写回配置**（此前按 `api_base`
+     派生 ⇒ 所有部署共用同一个 X-Device-Id）；
+   - health_check 的固定提示词「只回复\`Hello, world!\`」改为中性提示词池随机取一条。
+5. 登录 payload 与真实客户端对齐：`email` / `mobile` / `area_code` 固定发送（空值发空串）。
+6. 新增两个诊断入口：`cargo run --example hif_probe`（只探测风控令牌端点，
+   **不产生任何账号流量**）、`cargo run --example account_check -- -c config.toml`
+   （只做一次登录，读 `user.chat.is_muted`）。
+
+### 仍然存在的、尚未解决的差异（后续方向）
+
+| 差异 | 说明 |
+|------|------|
+| **会话生命周期** | 真实客户端一个会话长期复用、几乎不删除；本代理仍是「一次请求 = 建会话 → 发一条 → 立刻删」。历史上评估过 session 复用（跨用户泄漏风险 + 无上游清理接口）后放弃 |
+| **X-Device-Id 粒度** | 真实客户端是「一个浏览器 profile = 一个 `device_id`（数美）+ 一个 X-Device-Id」，1:1 配对；本代理目前 X-Device-Id 是**实例级**（所有账号共用），更彻底的做法是**按账号**派生/配对 |
+| **TLS 指纹与身份** | 目前是「安卓 App UA + Chrome136 TLS 指纹」。`wreq-util` 有 OkHttp 拟态档位，理论上更自洽；但桌面 Chrome UA 会被 AWS WAF 202 拦截，改动需实测 |
+| **`/client/settings*` 系列请求** | 真实客户端启动会拉 5 个 scope（`did` 用 `__ds_remote_feature_did`）并在设置变更时 `report`；本代理完全不发 |
+| **文件上传请求头** | 真实客户端上传时额外带 `x-thinking-enabled` / `x-model-type` / `x-file-size`；本代理未发（只影响超长 prompt / 附件路径） |
+| **通用请求头细节** | `wreq` 的 Chrome136 拟态会注入 `sec-ch-ua*` / `sec-fetch-*` / `accept` / `accept-language: en-US`，与「安卓 App UA」并不自洽；真实 Web 客户端发 `accept: */*`、`accept-language: zh-CN`。未改动是因为当前组合已能通过 WAF，换身份需要实测 |
+
+### 验证方法与当前状态
+
+单账号最小验证（**逐号、低频**，避免再被禁言）：
+
+1. 浏览器抓包取得该账号真实 `device_id`（数美指纹），并记下同一 profile 的 X-Device-Id；
+2. `hif_probe` 先确认风控令牌端点在本机可达（不产生账号流量）；
+3. 启动服务 → 账号初始化（登录 / check_device / 健康检查）+ **1 次**真实对话请求；
+4. 之后**只做登录**（`account_check`）观察 `is_muted`，观察窗口 ≥ 数小时
+   —— 历史对照：同样的低强度流量下，缺失 `x-hif-leim` 时账号在 5–20 分钟内即被禁言。
+
+> 结论待观测窗口结束后回填（见 CHANGELOG / issue #112 评论）。
+
+#### 2026-10-07 实测结果：账号 1 被「临时停用」（结论：无法完成验证）
+
+单账号最小流量实测（`l3366599051@163.com`，全程只有 1 次对话请求）：
+
+| 时间 (UTC) | 事件 | 结果 |
+|-----------|------|------|
+| 17:14 | 真实浏览器（官方客户端）登录并发 1 条消息 | ✅ 正常，`userIsMuted=false` |
+| 17:31 | 服务启动：hif 取令牌 ✅ → login → check_device → 建会话 → 健康检查 completion | ✅ `is_muted=0` |
+| 17:33 | 经代理发 **1 次**对话请求（带 `x-hif-leim`，流式返回正常） | ✅ 正常 |
+| 17:35 / 17:39 / 17:44 | 登录复查 ×3 | ✅ 均未禁言 |
+| **17:52** | 登录复查 | ❌ **`biz_code=10 USER_IS_BANNED`** |
+
+用真实浏览器登录同一账号，官方页面提示：
+
+> **「由于违规次数过多，你的账户已被临时停用」**
+
+**这说明什么、不能说明什么：**
+
+- 该账号在 2026-09 已累计多次违规（禁言 ≈3 天 → ≈8–9 天），本次提示语明确指向
+  **「违规次数过多」**，与「阶梯升级处罚」的社区观察一致（1 天 → 3 天 → 8 天 → 永久）；
+- 因此本次停用**不能**判定为「`x-hif-leim` 修复无效」——同一账号即使用官方客户端、
+  或仅做登录，也可能触发下一级处罚；
+- 但同样**不能**判定修复有效。**「是否已可规避封号」目前仍未被证明**，
+  v0.5.0 的 release notes 必须如实写明这一点；
+- 教训一：**不要用高频登录做监控**。本次 20 分钟内做了 3 次登录复查，
+  这不是正常用户行为，本身就可能参与触发；复查应改为 +30min / +2h / +6h 这种低频，
+  并优先用浏览器（官方客户端）打开页面观察；
+- 教训二：**已被处罚过的账号不能作为验证对象**。要验证「能否规避封号」，
+  必须使用**全新、无违规历史**的账号（每个账号独立 `device_id` + 独立 X-Device-Id）。
+
+**下一步的正确实验设计**（待有干净账号时执行）：
+
+1. 账号 A：全新账号，只跑本代理（最小流量），观察 ≥24h；
+2. 账号 B：全新账号，只用官方浏览器做同样强度的使用，作为对照组；
+3. 两组都低频复查（≤3 次/天），记录 `is_muted` / `mute_until` / 封禁提示语；
+4. 只有「A 长期正常且 B 也正常」时，才能说本代理的封号风险与官方客户端接近。
+
+

@@ -13,7 +13,7 @@ pub struct DsCoreConfig {
     pub client_locale: String,
     /// X-Client-Bundle-Id 请求头（真实客户端固定为 com.deepseek.chat）
     pub client_bundle_id: String,
-    /// X-Device-Id 请求头（设备级 UUID，空 = 按 api_base 确定性派生）
+    /// X-Device-Id 请求头（设备级 UUID，空 = 按 api_base 确定性派生兜底）
     pub client_device_id: String,
     /// X-Device-Model 请求头（真实 Web 客户端发空串）
     pub client_device_model: String,
@@ -21,6 +21,11 @@ pub struct DsCoreConfig {
     pub client_timezone_offset: String,
     /// 登录 payload 的 os 字段（真实 Web 客户端为 "web"，App 为 "android"）
     pub client_os: String,
+    /// 是否在 completion 请求上回传 `x-hif-leim` 风控令牌
+    ///
+    /// 真实客户端会轮询 `hif-leim.deepseek.com` 取令牌并在 SSE 请求上带回；
+    /// 关闭仅用于对照实验（正常使用务必保持开启）。
+    pub hif_enabled: bool,
     pub proxy_url: Option<String>,
     pub model_types: Vec<String>,
     pub input_character_limits: Vec<u32>,

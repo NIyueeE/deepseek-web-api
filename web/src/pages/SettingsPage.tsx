@@ -580,6 +580,24 @@ export function SettingsPage() {
               default_search_enabled = {String(config.ds_core.default_search_enabled)}
             </span>
           </label>
+          <div>
+            <label
+              htmlFor="set-hif-enabled"
+              className="flex items-center gap-3 cursor-pointer select-none"
+            >
+              <input
+                id="set-hif-enabled"
+                type="checkbox"
+                checked={config.ds_core.hif_enabled}
+                onChange={(e) => update(['ds_core', 'hif_enabled'], e.target.checked)}
+                className="h-4 w-4 rounded border-input accent-primary cursor-pointer"
+              />
+              <span className="text-xs font-mono">
+                hif_enabled = {String(config.ds_core.hif_enabled)}
+              </span>
+            </label>
+            <p className="text-[11px] text-muted-foreground mt-1.5">{t('settings.hifDesc')}</p>
+          </div>
         </CardContent>
       </Card>
 

@@ -77,6 +77,15 @@ Please register your own. You can refer to the method in [issue #62](https://git
 >
 > So do **not** rely on public test accounts. Use your own and set a `device_id` per account in
 > `config.toml` or the admin panel, otherwise login is rejected by risk control.
+>
+> **✅ Update (2026-10): the missing risk-control token is now implemented.** Capturing a real
+> browser session revealed that the official client attaches a short-lived token issued by
+> `hif-leim.deepseek.com` to every `/chat/completion` request (`x-hif-leim`, TTL from the
+> `x-hif-ttl` response header, 600s by default). This proxy sent no such header at all, so
+> upstream could flag a request as non-official without any behavioural analysis — which matches
+> the observed "muted after only 2 requests per account" reports. Since v0.5.0 `ds_core` fetches
+> the token, refreshes it on TTL and attaches it to SSE requests (`hif_enabled = true` by default).
+> See `docs/development.md` for details.
 
 #### How to obtain `device_id`
 

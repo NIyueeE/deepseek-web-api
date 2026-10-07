@@ -38,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
         client_device_model: config.ds_core.client_device_model.clone(),
         client_timezone_offset: config.ds_core.client_timezone_offset.clone(),
         client_os: config.ds_core.client_os.clone(),
+        hif_enabled: config.ds_core.hif_enabled,
         proxy_url: config.proxy.url.clone(),
         model_types: config.ds_core.model_types.clone(),
         input_character_limits: config.ds_core.input_character_limits.clone(),

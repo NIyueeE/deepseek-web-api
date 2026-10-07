@@ -753,22 +753,10 @@ async fn try_init_account(
     }
 
     let login_payload = LoginPayload {
-        email: if creds.email.is_empty() {
-            None
-        } else {
-            Some(creds.email.clone())
-        },
-        mobile: if creds.mobile.is_empty() {
-            None
-        } else {
-            Some(creds.mobile.clone())
-        },
+        email: creds.email.clone(),
+        mobile: creds.mobile.clone(),
         password: creds.password.clone(),
-        area_code: if creds.area_code.is_empty() {
-            None
-        } else {
-            Some(creds.area_code.clone())
-        },
+        area_code: creds.area_code.clone(),
         device_id: creds.device_id.clone(),
         os: client.client_os().to_string(),
     };
@@ -865,6 +853,27 @@ async fn try_init_account(
     })
 }
 
+/// 健康检查用的中性提示词池
+///
+/// 早期实现固定发「只回复\`Hello, world!\`」——这是**所有部署共用的一个常量字符串**，
+/// 上游只要按 prompt 聚类就能把大量账号关联到同一个客户端。这里每次随机取一条，
+/// 既保留「账号能否正常完成一次推理」的检查能力，又不再留下全局指纹。
+const HEALTH_CHECK_PROMPTS: [&str; 5] = [
+    "你好",
+    "1+1 等于几？",
+    "用一句话介绍一下你自己",
+    "今天适合做什么？",
+    "帮我想一个周末的小计划",
+];
+
+/// 随机取一条健康检查提示词（时间戳低位做选择，无需引入随机数依赖）
+fn health_check_prompt() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos() as usize);
+    HEALTH_CHECK_PROMPTS[nanos % HEALTH_CHECK_PROMPTS.len()].to_string()
+}
+
 async fn health_check(
     token: &str,
     session_id: &str,
@@ -885,10 +894,11 @@ async fn health_check(
         chat_session_id: session_id.to_string(),
         parent_message_id: None,
         model_type: model_type.to_string(),
-        prompt: "只回复`Hello, world!`".to_string(),
+        prompt: health_check_prompt(),
         ref_file_ids: vec![],
         thinking_enabled: false,
         search_enabled: false,
+        action: None,
         preempt: false,
     };
 

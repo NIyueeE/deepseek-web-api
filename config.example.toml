@@ -69,13 +69,21 @@ port = 22217
 # X-Client-Bundle-Id 请求头（真实客户端固定 com.deepseek.chat）
 # client_bundle_id = "com.deepseek.chat"
 # X-Device-Id 请求头 / check_device payload 使用的设备 UUID。
-# 真实客户端每个安装一个持久 UUID；留空则按 api_base 确定性派生（重启不变，
-# 避免每次重启都呈现为「新设备」）。填任意 UUID 字符串可覆盖。
+# 真实客户端「每个安装一个持久 UUID」；留空时服务首次启动会生成一个随机 UUID
+# 并写回本配置（此后重启/热重载都保持同一身份）。填任意 UUID 字符串可覆盖。
 # client_device_id = ""
 # X-Device-Model 请求头（真实 Web 客户端发空串）
 # client_device_model = ""
 # X-Client-Timezone-Offset 请求头（UTC+8 = 28800）
 # client_timezone_offset = "28800"
+
+# 是否在 completion 请求上回传 x-hif-leim 风控令牌（默认 true）
+#
+# 真实 Web/App 客户端启动后会轮询 hif-leim.deepseek.com 取一个短期令牌
+# （有效期由响应头 x-hif-ttl 给出，默认 600s），并在 SSE（completion）请求上
+# 以 x-hif-leim 头回传。缺少该头时上游可直接判定请求并非来自官方客户端 ——
+# 这是第三方反代最容易漏掉的风控信号。关闭仅用于对照实验。
+# hif_enabled = true
 
 # API 基础地址（默认）
 # api_base = "https://chat.deepseek.com/api/v0"

@@ -38,6 +38,7 @@ ds_core/src/
 ├── accounts/        # Account sub-modules
 │   ├── client.rs    # Raw HTTP client: API endpoints, Envelope parsing
 │   ├── pool.rs      # Account pool: init, selection, AccountGuard
+│   ├── hif.rs       # HIF risk-control token (x-hif-leim) fetch/cache
 │   └── pow.rs       # PoW solver: wasmtime WASM loader, DeepSeekHashV1
 ├── chat.rs          # Facade: Chat struct, prompt-size dispatch
 ├── chat/            # Chat sub-modules
@@ -589,7 +590,10 @@ Follow `docs/code-style.md`:
 | HTTP server/routes | `src/server/` | handlers → stream → error |
 | PoW WASM solver | `ds_core/src/accounts/pow.rs` | wasmtime loading, dynamic export probing, DeepSeekHashV1 |
 | DeepSeek HTTP client | `ds_core/src/accounts/client.rs` | `Envelope::into_result()`, WAF detection, all API methods |
+| HIF risk-control token | `ds_core/src/accounts/hif.rs` | `x-hif-leim`: polled from `hif-leim.deepseek.com/query` (no auth), TTL from `x-hif-ttl`, attached to SSE requests only. Missing it marks the request as a non-official client — see `docs/development.md` (2026-10-07) |
 | Unified debug CLI | `examples/adapter_cli.rs` | Modes: chat/raw/compare/concurrent/status/models |
+| Risk-token probe | `examples/hif_probe.rs` | Checks the `hif-leim` endpoint only — **no account traffic** |
+| Account status check | `examples/account_check.rs` | Login-only `is_muted` / `mute_until` check (1 request per account) |
 | Example request JSON | `examples/adapter_cli/` | Pre-built ChatCompletionsRequest samples |
 | Scripted regression test | `just adapter-cli -- source examples/adapter_cli-script.txt` | Runs all JSON samples in sequence |
 | Docker deployment | `docker/Dockerfile` + `docker/docker-compose.yaml` | Pre-built ghcr.io image, bind mounts for config/data |
@@ -660,6 +664,10 @@ just test-adapter-request converter_emits_role_and_content -- --exact
 
 # Run a single Rust test (use -- --exact for precise name matching)
 cargo test converter_emits_role_and_content -- --exact
+
+# Risk-control diagnostics (no account traffic / login-only)
+cargo run --example hif_probe                     # 只探测 x-hif-leim 端点连通性
+cargo run --example account_check -- -c config.toml   # 只登录一次，读 is_muted/mute_until
 
 # Run all Rust tests
 cargo test

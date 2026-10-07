@@ -282,6 +282,7 @@ impl Chat {
                 ref_file_ids: vec![],
                 thinking_enabled: false,
                 search_enabled: false,
+                action: None,
                 preempt: false,
             };
 
@@ -348,6 +349,7 @@ impl Chat {
             ref_file_ids: vec![],
             thinking_enabled: req.thinking_enabled,
             search_enabled: req.search_enabled,
+            action: None,
             preempt: false,
         };
 
@@ -628,6 +630,7 @@ impl Chat {
             ref_file_ids,
             thinking_enabled: req.thinking_enabled,
             search_enabled: req.search_enabled,
+            action: None,
             preempt: false,
         };
 

@@ -185,6 +185,7 @@
     "searchModeDesc": "Whether web search is enabled when the request omits web_search_options. Disabling strictly follows the OpenAI semantics and avoids injecting DeepSeek search system prompts.",
     "quota": "Per-account Hourly Request Budget",
     "quotaDesc": "Upstream mutes accounts after a few hundred requests per hour, and muting is delayed. Accounts that exhaust this budget are skipped until the window rolls over (0 = unlimited). Add more accounts instead of raising this value.",
+    "hifDesc": "Upstream expects the x-hif-leim risk-control token on completion requests (real clients poll it from hif-leim.deepseek.com). When disabled the header is not sent — this is for A/B experiments only, keep it enabled in normal use.",
     "quotaLabel": "Requests / hour / account"
   },
   "logs": {

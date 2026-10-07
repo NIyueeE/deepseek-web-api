@@ -185,6 +185,7 @@
     "searchModeDesc": "Apakah pencarian web aktif saat permintaan tidak menyertakan web_search_options. Menonaktifkan akan mengikuti semantik OpenAI secara ketat.",
     "quota": "Kuota Permintaan per Akun per Jam",
     "quotaDesc": "Upstream membisukan akun setelah beberapa ratus permintaan per jam, dan pembisuan bersifat tertunda. Akun yang kehabisan kuota dilewati hingga jendela bergulir (0 = tanpa batas).",
+    "hifDesc": "Upstream mengharapkan token kontrol risiko x-hif-leim pada permintaan completion (klien resmi mengambilnya dari hif-leim.deepseek.com). Jika dimatikan, header tidak dikirim — hanya untuk eksperimen A/B, biarkan aktif pada penggunaan normal.",
     "quotaLabel": "Permintaan / jam / akun"
   },
   "logs": {
