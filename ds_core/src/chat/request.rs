@@ -233,7 +233,7 @@ impl Chat {
                 );
                 CoreError::Overloaded
             })?;
-        let account = guard.account();
+        let account = guard.account_arc();
         let account_id = account.display_id().to_string();
         let token = account.token().to_string();
 
@@ -243,7 +243,7 @@ impl Chat {
         );
 
         // 2. 创建 session（所有 chunk 共享）
-        let session_id = match self.accounts.create_session(&token).await {
+        let session_id = match self.accounts.create_session(&account).await {
             Ok(id) => id,
             Err(e) => {
                 self.accounts.mark_error(&account_id);
@@ -251,8 +251,7 @@ impl Chat {
             }
         };
         // 从这里起，任何提前返回都由守卫负责删除 session（兜底 `?` 传播的路径）
-        let mut session_guard =
-            SessionGuard::new(self.accounts.client_clone().await, &token, &session_id);
+        let mut session_guard = SessionGuard::new(account.client(), &token, &session_id);
 
         // 3. 按 75% limit 切分 prompt
         let limit = self.input_character_limit_for(&req.model_type);
@@ -264,7 +263,7 @@ impl Chat {
         for (i, chunk) in chunks[..chunks.len() - 1].iter().enumerate() {
             let pow_header = match self
                 .accounts
-                .compute_pow_for_target(&token, "/api/v0/chat/completion")
+                .compute_pow_for_target(&account, "/api/v0/chat/completion")
                 .await
             {
                 Ok(h) => h,
@@ -288,7 +287,7 @@ impl Chat {
 
             let mut stream = match self
                 .accounts
-                .completion(&token, &pow_header, &payload)
+                .completion(&account, &pow_header, &payload)
                 .await
             {
                 Ok(s) => s,
@@ -309,7 +308,7 @@ impl Chat {
                 chat_session_id: session_id.clone(),
                 message_id: stop_id,
             };
-            let _ = self.accounts.stop_stream(&token, &stop_payload).await;
+            let _ = self.accounts.stop_stream(&account, &stop_payload).await;
 
             // 消费流直到 close 事件
             wait_close(
@@ -331,7 +330,7 @@ impl Chat {
         let last_chunk = chunks.into_iter().last().unwrap();
         let pow_header = match self
             .accounts
-            .compute_pow_for_target(&token, "/api/v0/chat/completion")
+            .compute_pow_for_target(&account, "/api/v0/chat/completion")
             .await
         {
             Ok(h) => h,
@@ -355,7 +354,7 @@ impl Chat {
 
         let mut raw_stream = match self
             .accounts
-            .completion(&token, &pow_header, &payload)
+            .completion(&account, &pow_header, &payload)
             .await
         {
             Ok(s) => s,
@@ -465,6 +464,7 @@ impl Chat {
             map.insert(
                 session_id.clone(),
                 ActiveSession {
+                    client: account.client(),
                     token: token.clone(),
                     session_id: session_id.clone(),
                     message_id: stop_id,
@@ -484,7 +484,7 @@ impl Chat {
                 Box::pin(stream),
                 guard,
                 SessionHandle {
-                    client: self.accounts.client_clone().await,
+                    client: account.client(),
                     token,
                     session_id,
                     message_id: stop_id,
@@ -518,7 +518,7 @@ impl Chat {
             CoreError::Overloaded
         })?;
 
-        let account = guard.account();
+        let account = guard.account_arc();
         let account_id = account.display_id().to_string();
         let token = account.token().to_string();
 
@@ -530,7 +530,7 @@ impl Chat {
 
         // 2. 创建临时 session
         let session_start = Instant::now();
-        let session_id = match self.accounts.create_session(&token).await {
+        let session_id = match self.accounts.create_session(&account).await {
             Ok(id) => id,
             Err(e) => {
                 self.accounts.mark_error(&account_id);
@@ -539,8 +539,7 @@ impl Chat {
         };
         let session_create_ms = session_start.elapsed().as_millis();
         // 从这里起，任何提前返回都由守卫负责删除 session
-        let mut session_guard =
-            SessionGuard::new(self.accounts.client_clone().await, &token, &session_id);
+        let mut session_guard = SessionGuard::new(account.client(), &token, &session_id);
         log::info!(
             target: "ds_core::accounts",
             "req={} session_created: id={}, create_ms={}, account={}",
@@ -555,7 +554,7 @@ impl Chat {
             match self
                 .accounts
                 .upload_and_poll(
-                    &token,
+                    &account,
                     SESSION_HISTORY_FILE,
                     "text/plain",
                     history_content.as_bytes(),
@@ -578,7 +577,7 @@ impl Chat {
             match self
                 .accounts
                 .upload_and_poll(
-                    &token,
+                    &account,
                     &file.filename,
                     &file.content_type,
                     &file.content,
@@ -604,7 +603,7 @@ impl Chat {
         let pow_start = Instant::now();
         let pow_header = match self
             .accounts
-            .compute_pow_for_target(&token, "/api/v0/chat/completion")
+            .compute_pow_for_target(&account, "/api/v0/chat/completion")
             .await
         {
             Ok(h) => h,
@@ -637,7 +636,7 @@ impl Chat {
         let completion_start = Instant::now();
         let mut raw_stream = match self
             .accounts
-            .completion(&token, &pow_header, &payload)
+            .completion(&account, &pow_header, &payload)
             .await
         {
             Ok(s) => s,
@@ -744,6 +743,7 @@ impl Chat {
             map.insert(
                 session_id.clone(),
                 ActiveSession {
+                    client: account.client(),
                     token: token.clone(),
                     session_id: session_id.clone(),
                     message_id: stop_id,
@@ -763,7 +763,7 @@ impl Chat {
                 Box::pin(stream),
                 guard,
                 SessionHandle {
-                    client: self.accounts.client_clone().await,
+                    client: account.client(),
                     token,
                     session_id,
                     message_id: stop_id,

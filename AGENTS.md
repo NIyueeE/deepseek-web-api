@@ -374,7 +374,10 @@ Request fields mapped in `request/resolver.rs`:
   `RISK_DEVICE_DETECTED` (biz_code 11), verified empirically. **Each account should
   use its own** `device_id`: the fingerprint is device-scoped and upstream correlates
   accounts by it; sharing one across accounts raises mute risk. Startup warns when
-  accounts share a fingerprint. See `docs/development.md`.
+  accounts share a fingerprint. See `docs/development.md`. The `X-Device-Id` header is
+  **derived per account** from this fingerprint (`pool::account_x_device_id`), and the
+  `x-hif-leim` token cache is keyed by that device id (`hif::HifRegistry`) — one device
+  identity and one risk token per account, matching the real client.
 - **Hourly request quota** (`hourly_request_quota`, default 60, 0 = unlimited): enforced
   per account in `AccountPool::get_account()` via a one-hour fixed window
   (`RequestWindow` in `ds_core/src/accounts/pool.rs`). Accounts over budget are skipped;

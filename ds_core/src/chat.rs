@@ -69,25 +69,23 @@ impl Chat {
 
         let futures: Vec<_> = sessions
             .into_values()
-            .map(|s| {
-                let accounts = self.accounts.clone();
-                async move {
-                    let payload = StopStreamPayload {
-                        chat_session_id: s.session_id.clone(),
-                        message_id: s.message_id,
-                    };
-                    let _ = accounts.stop_stream(&s.token, &payload).await;
-                    let _ = accounts
-                        .delete_session(&s.token, &s.session_id)
-                        .await
-                        .inspect_err(|e| {
-                            log::warn!(
-                                target: "ds_core::accounts",
-                                "shutdown 清理 session {} 失败: {}",
-                                s.session_id, e
-                            );
-                        });
-                }
+            .map(|s| async move {
+                let payload = StopStreamPayload {
+                    chat_session_id: s.session_id.clone(),
+                    message_id: s.message_id,
+                };
+                let client = s.client.clone();
+                let _ = client.stop_stream(&s.token, &payload).await;
+                let _ = client
+                    .delete_session(&s.token, &s.session_id)
+                    .await
+                    .inspect_err(|e| {
+                        log::warn!(
+                            target: "ds_core::accounts",
+                            "shutdown 清理 session {} 失败: {}",
+                            s.session_id, e
+                        );
+                    });
             })
             .collect();
         join_all(futures).await;

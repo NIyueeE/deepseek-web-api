@@ -70,8 +70,11 @@ port = 22217
 # X-Client-Bundle-Id 请求头（真实客户端固定 com.deepseek.chat）
 # client_bundle_id = "com.deepseek.chat"
 # X-Device-Id 请求头 / check_device payload 使用的设备 UUID。
-# 真实客户端「每个安装一个持久 UUID」；留空时服务首次启动会生成一个随机 UUID
-# 并写回本配置（此后重启/热重载都保持同一身份）。填任意 UUID 字符串可覆盖。
+#
+# 留空（默认）= **按账号的 device_id 派生**：每个账号一个稳定且唯一的设备身份，
+# 与真实客户端「一个浏览器 profile = 一个数美 device_id + 一个 X-Device-Id」一致；
+# HIF 风控令牌也按设备分别获取（多账号共用设备身份 = 告诉上游它们来自同一台设备）。
+# 填了值则强制所有账号共用该 UUID（仅当你确实希望如此时才用）。
 # client_device_id = ""
 # X-Device-Model 请求头（真实 Web 客户端发空串）
 # client_device_model = ""

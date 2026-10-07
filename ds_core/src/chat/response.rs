@@ -41,6 +41,8 @@ pub enum StreamEvent {
 // ── 内部类型 ──────────────────────────────────────────────────────────
 
 pub(crate) struct ActiveSession {
+    /// 该账号设备身份下的客户端视图（shutdown 清理时需要一致的 X-Device-Id）
+    pub(crate) client: DsClient,
     pub(crate) token: String,
     pub(crate) session_id: String,
     pub(crate) message_id: i64,

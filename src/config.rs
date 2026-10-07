@@ -415,28 +415,7 @@ impl Config {
             return Ok((default, path));
         }
 
-        let mut config = Self::load(&path)?;
-
-        // 首次运行生成并持久化设备 UUID（X-Device-Id）
-        //
-        // 真实客户端「每个安装一个持久 UUID」；若留空由客户端按 api_base 派生，
-        // 所有部署会共用同一个设备身份（上游可据此关联大量账号）。
-        // 生成后写入配置文件，重启与热重载都保持同一身份。
-        if config.ds_core.client_device_id.trim().is_empty() {
-            config.ds_core.client_device_id = ds_core::random_device_uuid();
-            match config.save(&path) {
-                Ok(()) => log::info!(
-                    target: "config",
-                    "generated persistent device uuid (client_device_id) into {}",
-                    path.display()
-                ),
-                Err(e) => log::warn!(
-                    target: "config",
-                    "生成 client_device_id 后写入配置失败（本次运行仍会使用该值，重启后会变化）: {}",
-                    e
-                ),
-            }
-        }
+        let config = Self::load(&path)?;
 
         Ok((config, path))
     }

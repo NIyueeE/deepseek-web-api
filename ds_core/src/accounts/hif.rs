@@ -14,6 +14,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
 use log::{debug, warn};
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -90,13 +91,57 @@ struct State {
 
 /// 单个 HIF 令牌端点（leim / dliq）的取值与缓存
 ///
-/// 令牌与「设备 + 出口 IP」绑定，因此由客户端实例共享、按 TTL 刷新。
+/// 令牌与「设备 + 出口 IP」绑定，因此**按设备（X-Device-Id）分别缓存**：
+/// 真实客户端一个浏览器 profile 一个设备身份，代理侧同理按账号派生设备身份，
+/// 多账号共用同一个令牌会把它们关联成同一台设备。
 pub(crate) struct HifToken {
     http: wreq::Client,
     url: String,
     /// 客户端拟态头（与业务请求一致，但不带 Authorization）
     headers: wreq::header::HeaderMap,
     state: Mutex<State>,
+}
+
+/// 按设备身份分发 HIF 令牌（每个 X-Device-Id 一份独立缓存与刷新周期）
+pub(crate) struct HifRegistry {
+    http: wreq::Client,
+    url: String,
+    /// 除 `X-Device-Id` 之外的客户端拟态头模板
+    headers: wreq::header::HeaderMap,
+    tokens: DashMap<String, Arc<HifToken>>,
+}
+
+impl HifRegistry {
+    pub(crate) fn new(
+        http: wreq::Client,
+        url: String,
+        headers: wreq::header::HeaderMap,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            http,
+            url,
+            headers,
+            tokens: DashMap::new(),
+        })
+    }
+
+    /// 取某设备身份的令牌句柄（首次调用时创建，之后复用同一份缓存）
+    pub(crate) fn token_for(&self, device_id: &str) -> Arc<HifToken> {
+        if let Some(token) = self.tokens.get(device_id) {
+            return Arc::clone(token.value());
+        }
+        let mut headers = self.headers.clone();
+        if let Ok(value) = wreq::header::HeaderValue::from_str(device_id) {
+            headers.insert("X-Device-Id", value);
+        }
+        let token = HifToken::new(self.http.clone(), self.url.clone(), headers);
+        Arc::clone(
+            self.tokens
+                .entry(device_id.to_string())
+                .or_insert(token)
+                .value(),
+        )
+    }
 }
 
 impl HifToken {

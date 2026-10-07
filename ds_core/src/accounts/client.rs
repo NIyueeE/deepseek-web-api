@@ -378,8 +378,8 @@ pub struct DsClient {
     api_base: String,
     wasm_url: String,
     identity: ClientIdentity,
-    /// HIF 风控令牌（`x-hif-leim`）；None = 已关闭
-    hif: Option<std::sync::Arc<super::hif::HifToken>>,
+    /// HIF 风控令牌注册表（`x-hif-leim`，按设备身份分桶）；None = 已关闭
+    hif: Option<std::sync::Arc<super::hif::HifRegistry>>,
 }
 
 impl DsClient {
@@ -408,7 +408,7 @@ impl DsClient {
                 warn!(target: "ds_core::client", "客户端头构造失败，HIF 取令牌将不带拟态头: {e}");
                 wreq::header::HeaderMap::new()
             });
-            super::hif::HifToken::new(http.clone(), hif.leim_url.clone(), headers)
+            super::hif::HifRegistry::new(http.clone(), hif.leim_url.clone(), headers)
         });
 
         Self {
@@ -425,17 +425,40 @@ impl DsClient {
         &self.identity.client_os
     }
 
+    /// 返回绑定到指定设备身份（`X-Device-Id`）的客户端视图
+    ///
+    /// 真实 Web 客户端是「一个浏览器 profile = 一个数美 `device_id` + 一个
+    /// `X-Device-Id`」，HIF 风控令牌也按设备下发。因此代理侧同样**按账号**
+    /// 派生设备身份：多账号共用同一个 `X-Device-Id` / 同一个令牌，等于告诉
+    /// 上游「这些账号来自同一台设备」。
+    ///
+    /// 返回的客户端与原客户端共享 HTTP 连接池与令牌注册表，仅设备身份不同。
+    #[must_use]
+    pub fn scoped_to(&self, x_device_id: &str) -> Self {
+        let mut scoped = self.clone();
+        if !x_device_id.trim().is_empty() {
+            scoped.identity.device_id = x_device_id.trim().to_string();
+        }
+        scoped
+    }
+
+    /// 当前视图的设备身份（X-Device-Id）
+    #[must_use]
+    pub fn device_id(&self) -> &str {
+        &self.identity.device_id
+    }
+
     /// 预热 HIF 风控令牌（真实客户端在应用启动时即开始轮询）
     pub async fn warm_up_hif(&self) {
         if let Some(hif) = &self.hif {
-            hif.warm_up().await;
+            hif.token_for(&self.identity.device_id).warm_up().await;
         }
     }
 
-    /// 读取当前 HIF 风控令牌（诊断用；缺失时触发一次取令牌）
+    /// 读取当前设备身份的 HIF 风控令牌（诊断用；缺失时触发一次取令牌）
     pub async fn hif_token(&self) -> Option<String> {
         match &self.hif {
-            Some(hif) => hif.value().await,
+            Some(hif) => hif.token_for(&self.identity.device_id).value().await,
             None => None,
         }
     }
@@ -451,7 +474,7 @@ impl DsClient {
     /// 缺失时上游可直接判定为非官方客户端。
     async fn attach_hif(&self, headers: &mut wreq::header::HeaderMap) -> Result<(), ClientError> {
         if let Some(hif) = &self.hif
-            && let Some(value) = hif.value().await
+            && let Some(value) = hif.token_for(&self.identity.device_id).value().await
         {
             debug!(
                 target: "ds_core::client",
@@ -788,13 +811,10 @@ impl DsClient {
 
 /// 由种子字节确定性派生 UUID（RFC 4122 v4 格式）
 ///
-/// 两个用途：
-/// - `client_device_id` 未配置且根 crate 未能持久化随机 UUID 时的**兜底**
-///   （此时按 api_base 派生，至少保证重启后设备身份不变）；
-/// - [`random_device_uuid`] 的格式化实现。
-///
-/// 注意：按 `api_base` 派生意味着**所有部署共用同一个 X-Device-Id**，
-/// 因此根 crate 会在首启生成随机 UUID 并写入配置文件，仅在无法写入时回退到派生值。
+/// 用途：
+/// - **按账号派生 X-Device-Id**（`ds-free-api:x-device-id:{数美 device_id}`）：
+///   稳定且每账号唯一，对齐真实客户端「一个浏览器 profile 一个设备身份」；
+/// - 全局 `client_device_id` 未配置、且账号也没有 `device_id` 时的兜底。
 pub(crate) fn derive_device_uuid(seed: &[u8]) -> String {
     fn fnv1a(data: &[u8], offset: u64) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ offset;
@@ -831,28 +851,6 @@ pub(crate) fn derive_device_uuid(seed: &[u8]) -> String {
         hex[14],
         hex[15]
     )
-}
-
-/// 生成随机设备 UUID（RFC 4122 v4）
-///
-/// 用于「每个安装一个持久设备 UUID」：调用方（根 crate）在首次运行时生成
-/// 并写入配置文件。不引入 rand 依赖：混入高精度时间、进程号、栈地址与
-/// 进程内计数器后按 v4 格式派生，足以保证不同部署互不相同。
-#[must_use]
-pub fn random_device_uuid() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let marker = 0u8;
-    let mut seed = Vec::with_capacity(40);
-    seed.extend_from_slice(&nanos.to_be_bytes());
-    seed.extend_from_slice(&u64::from(std::process::id()).to_be_bytes());
-    seed.extend_from_slice(&(std::ptr::from_ref(&marker) as usize as u64).to_be_bytes());
-    seed.extend_from_slice(&COUNTER.fetch_add(1, Ordering::Relaxed).to_be_bytes());
-    derive_device_uuid(&seed)
 }
 
 /// 解析 check_device 的 rotate 指令，提取新令牌
@@ -957,6 +955,37 @@ mod tests {
             c.client_headers().unwrap()["x-device-id"],
             "11111111-2222-4333-8444-555555555555"
         );
+    }
+
+    #[test]
+    fn scoped_client_carries_its_own_device_identity() {
+        let base = test_client();
+        let a = base.scoped_to("11111111-1111-4111-8111-111111111111");
+        let b = base.scoped_to("22222222-2222-4222-8222-222222222222");
+        assert_eq!(
+            a.client_headers().unwrap()["x-device-id"],
+            "11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(
+            b.client_headers().unwrap()["x-device-id"],
+            "22222222-2222-4222-8222-222222222222"
+        );
+        // 空值不改变原设备身份
+        let base_id = base.client_headers().unwrap()["x-device-id"].clone();
+        assert_eq!(
+            base.scoped_to("").client_headers().unwrap()["x-device-id"],
+            base_id
+        );
+        // 设备视图与原客户端共享同一份 HIF 注册表（同一设备 = 同一份令牌）
+        let base_hif = base.hif.as_ref().expect("hif enabled");
+        assert!(std::sync::Arc::ptr_eq(
+            &base_hif.token_for("device-x"),
+            &a.hif.as_ref().unwrap().token_for("device-x")
+        ));
+        assert!(!std::sync::Arc::ptr_eq(
+            &base_hif.token_for("device-x"),
+            &base_hif.token_for("device-y")
+        ));
     }
 
     #[test]

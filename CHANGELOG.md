@@ -15,6 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **设备身份改为按账号派生（X-Device-Id + HIF 令牌都按设备分桶）**：
+  `client_device_id` 留空（默认）时，`X-Device-Id` 按该账号的数美 `device_id`
+  派生（`ds-free-api:x-device-id:{device_id}`）—— 每个账号一个**稳定且唯一**的设备
+  身份，与真实客户端「一个浏览器 profile = 一个数美 device_id + 一个 X-Device-Id」
+  一致；HIF 风控令牌也**按设备分别获取与刷新**。此前是实例级共用同一个
+  `X-Device-Id` 与同一份令牌，等于告诉上游「这些账号来自同一台设备」。
+  显式配置 `client_device_id` 仍可强制共用（不推荐）。同时移除 v0.5.0 引入的
+  「首启生成随机 UUID 并写回配置」逻辑（已被按账号派生取代）与
+  `ds_core::random_device_uuid`
 - 文档（`docs/development.md`）：补上「我们实际发出的请求头 vs 真实客户端」取证 ——
   当前是「安卓 App UA + Chrome/macOS client hints + 文档导航头」的自相矛盾组合，
   并给出两条自洽路线（全 Web 身份 / OkHttp 原生 App 身份）与验证前提

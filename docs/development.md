@@ -497,7 +497,11 @@ x-hif-leim: <来自 hif-leim.deepseek.com 的令牌>
    取令牌失败不阻断业务请求（真实客户端轮询失败时同样只是不带该头）。
 2. `x-hif-leim` 只加在 completion / edit_message（即 SSE 请求）上，与真实客户端一致。
 3. 新配置项 `hif_enabled`（默认 `true`，**仅用于对照实验**）。
-4. 顺带修掉两个「全局常量指纹」：
+4. **设备身份按账号派生**（v0.6.0 补）：X-Device-Id 由账号的数美 `device_id`
+   派生（`ds-free-api:x-device-id:{device_id}`），HIF 令牌也按设备分桶 —— 对齐真实
+   客户端「一个浏览器 profile = 一个 device_id + 一个 X-Device-Id」，避免多账号
+   被关联成同一台设备；
+5. 顺带修掉两个「全局常量指纹」：
    - `client_device_id` 留空时改为**首启生成随机 UUID 并写回配置**（此前按 `api_base`
      派生 ⇒ 所有部署共用同一个 X-Device-Id）；
    - health_check 的固定提示词「只回复\`Hello, world!\`」改为中性提示词池随机取一条。
@@ -512,7 +516,6 @@ x-hif-leim: <来自 hif-leim.deepseek.com 的令牌>
 |------|------|
 | **启动时的 health_check completion** | 抓包显示真实客户端启动只做「登录 → check_device → 建会话 → fetch_page → settings」，**不发任何消息**；本代理每次启动都会为每个账号建会话并**发一条 completion**（文案已随机化，但模式仍是「刚登录就发消息」）。候选改法：把健康检查降级为只读探测（或默认关闭），但需先有干净账号能对照验证 |
 | **会话生命周期** | 真实客户端一个会话长期复用、几乎不删除；本代理仍是「一次请求 = 建会话 → 发一条 → 立刻删」。历史上评估过 session 复用（跨用户泄漏风险 + 无上游清理接口）后放弃 |
-| **X-Device-Id 粒度** | 真实客户端是「一个浏览器 profile = 一个 `device_id`（数美）+ 一个 X-Device-Id」，1:1 配对；本代理目前 X-Device-Id 是**实例级**（所有账号共用），更彻底的做法是**按账号**派生/配对 |
 | **TLS 指纹与身份** | 目前是「安卓 App UA + Chrome136 TLS 指纹」。`wreq-util` 有 OkHttp 拟态档位，理论上更自洽；但桌面 Chrome UA 会被 AWS WAF 202 拦截，改动需实测 |
 | **`/client/settings*` 系列请求** | 真实客户端启动会拉 5 个 scope（`did` 用 `__ds_remote_feature_did`）并在设置变更时 `report`；本代理完全不发 |
 | **文件上传请求头** | 真实客户端上传时额外带 `x-thinking-enabled` / `x-model-type` / `x-file-size`；本代理未发（只影响超长 prompt / 附件路径） |

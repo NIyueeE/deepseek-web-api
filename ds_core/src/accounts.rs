@@ -15,9 +15,9 @@ use crate::CoreError;
 use crate::config::{AccountConfig, DsCoreConfig};
 pub use client::{
     ChatSessionInfo, ClientError, ClientIdentity, CompletionPayload, DsClient, FetchSessionsData,
-    HifConfig, LoginPayload, StopStreamPayload, random_device_uuid,
+    HifConfig, LoginPayload, StopStreamPayload,
 };
-pub use pool::{AccountGuard, AccountPool, AccountStatus, PoolError};
+pub use pool::{Account, AccountGuard, AccountPool, AccountStatus, PoolError};
 pub use pow::{PowError, PowSolver};
 
 /// 由配置构造 HTTP 客户端（客户端拟态身份 + HIF 风控令牌端点）
@@ -132,27 +132,11 @@ impl Accounts {
         self.pool.mark_error(email_or_mobile);
     }
 
-    /// 获取 HTTP 客户端（供 GuardedStream 构造使用）
-    pub async fn client_clone(&self) -> DsClient {
-        self.client.read().await.clone()
-    }
-
-    /// 创建 session
-    pub async fn create_session(&self, token: &str) -> Result<String, CoreError> {
-        self.client
-            .read()
-            .await
-            .create_session(token)
-            .await
-            .map_err(Into::into)
-    }
-
-    /// 删除 session
-    pub async fn delete_session(&self, token: &str, session_id: &str) -> Result<(), CoreError> {
-        self.client
-            .read()
-            .await
-            .delete_session(token, session_id)
+    /// 创建 session（使用该账号自己的设备身份）
+    pub async fn create_session(&self, account: &Account) -> Result<String, CoreError> {
+        account
+            .client()
+            .create_session(&account.token())
             .await
             .map_err(Into::into)
     }
@@ -160,17 +144,16 @@ impl Accounts {
     /// 发起 completion（返回原始 SSE 字节流）
     pub async fn completion(
         &self,
-        token: &str,
+        account: &Account,
         pow_header: &str,
         payload: &CompletionPayload,
     ) -> Result<
         std::pin::Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, ClientError>> + Send>>,
         CoreError,
     > {
-        self.client
-            .read()
-            .await
-            .completion(token, pow_header, payload)
+        account
+            .client()
+            .completion(&account.token(), pow_header, payload)
             .await
             .map_err(Into::into)
     }
@@ -178,13 +161,12 @@ impl Accounts {
     /// 取消流式输出
     pub async fn stop_stream(
         &self,
-        token: &str,
+        account: &Account,
         payload: &StopStreamPayload,
     ) -> Result<(), CoreError> {
-        self.client
-            .read()
-            .await
-            .stop_stream(token, payload)
+        account
+            .client()
+            .stop_stream(&account.token(), payload)
             .await
             .map_err(Into::into)
     }
@@ -192,7 +174,7 @@ impl Accounts {
     /// 上传文件（含 PoW 计算与轮询）
     pub async fn upload_and_poll(
         &self,
-        token: &str,
+        account: &Account,
         filename: &str,
         content_type: &str,
         content: &[u8],
@@ -201,23 +183,19 @@ impl Accounts {
         const UPLOAD_POLL_INTERVAL_MS: u64 = 2000;
         const UPLOAD_POLL_MAX_RETRIES: usize = 30;
 
+        let client = account.client();
+        let token = &account.token();
         let pow_header = self
-            .compute_pow_for_target(token, "/api/v0/file/upload_file")
+            .compute_pow_for_target(account, "/api/v0/file/upload_file")
             .await?;
 
-        let upload_data = self
-            .client
-            .read()
-            .await
+        let upload_data = client
             .upload_file(token, &pow_header, filename, content_type, content.to_vec())
             .await?;
         let file_id = upload_data.id;
 
         for _ in 0..UPLOAD_POLL_MAX_RETRIES {
-            let fetch_data = self
-                .client
-                .read()
-                .await
+            let fetch_data = client
                 .fetch_files(token, std::slice::from_ref(&file_id))
                 .await?;
             if let Some(file) = fetch_data.files.first() {
@@ -247,28 +225,17 @@ impl Accounts {
     /// 计算指定 target_path 的 PoW header
     pub async fn compute_pow_for_target(
         &self,
-        token: &str,
+        account: &Account,
         target_path: &str,
     ) -> Result<String, CoreError> {
-        let challenge_data = self
-            .client
-            .read()
-            .await
-            .create_pow_challenge(token, target_path)
+        let challenge_data = account
+            .client()
+            .create_pow_challenge(&account.token(), target_path)
             .await?;
-        let result = self
-            .solver
-            .read()
-            .await
-            .solve(&challenge_data)
-            .map_err(|e| {
-                log::warn!(target: "ds_core::accounts", "PoW computation failed: {}", e);
-                CoreError::ProofOfWorkFailed(e)
-            })?;
+        let solver = self.solver.read().await;
+        let result = solver.solve(&challenge_data)?;
         Ok(result.to_header())
     }
-
-    // ── 供 DsCore 门面使用 ──────────────────────────────────────────
 
     pub fn account_statuses(&self) -> Vec<AccountStatus> {
         self.pool.account_statuses()

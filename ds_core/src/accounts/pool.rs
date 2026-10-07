@@ -116,6 +116,12 @@ pub struct Account {
     creds: AccountConfig,
     /// 滑动窗口限流器（用于每小时配额）
     window: SlidingWindowRateLimiter,
+    /// 绑定该账号设备身份（X-Device-Id）的客户端视图
+    ///
+    /// 真实 Web 客户端「一个浏览器 profile = 一个数美 device_id + 一个
+    /// X-Device-Id」，HIF 风控令牌也按设备下发；这里按账号派生，
+    /// 避免多账号共用同一设备身份与同一令牌。
+    client: DsClient,
 }
 
 /// 连续登录失败上限，达到后标记为 Invalid
@@ -271,7 +277,8 @@ impl Account {
     }
 
     /// 创建一个 Invalid 状态的账号（初始化失败时使用，仍加入池以便前台展示）
-    fn new_invalid(creds: AccountConfig, _hourly_quota: u64) -> Self {
+    fn new_invalid(creds: AccountConfig, _hourly_quota: u64, client: &DsClient) -> Self {
+        let scoped = client.scoped_to(&account_x_device_id(&creds, client));
         Self {
             token: std::sync::RwLock::new(String::new().into()),
             email: creds.email.clone(),
@@ -281,6 +288,7 @@ impl Account {
             error_count: AtomicU8::new(MAX_ERROR_COUNT),
             creds,
             window: SlidingWindowRateLimiter::new(),
+            client: scoped,
         }
     }
 
@@ -294,9 +302,23 @@ pub struct AccountGuard {
     account: Arc<Account>,
 }
 
+impl Account {
+    /// 该账号的设备身份视图（X-Device-Id + 对应设备的 HIF 令牌）
+    pub(crate) fn client(&self) -> DsClient {
+        self.client.clone()
+    }
+}
+
 impl AccountGuard {
     pub fn account(&self) -> &Account {
         &self.account
+    }
+
+    /// 取得账号的 `Arc` 句柄
+    ///
+    /// 需要在守卫被移动（例如移交流处理）之后继续使用账号时使用。
+    pub fn account_arc(&self) -> Arc<Account> {
+        Arc::clone(&self.account)
     }
 }
 
@@ -409,7 +431,7 @@ impl AccountPool {
                         Err(e) => {
                             warn!(target: "ds_core::accounts", "Account {} initialization failed: {}", display_id, e);
                             // 即使初始化失败也加入池，标记为 Invalid 以便前台展示
-                            Account::new_invalid(creds.clone(), self.hourly_quota)
+                            Account::new_invalid(creds.clone(), self.hourly_quota, &client)
                         }
                     };
                     Some((display_id, Arc::new(account)))
@@ -740,6 +762,21 @@ async fn init_account(
     try_init_account(creds, client, solver).await
 }
 
+/// 账号的 X-Device-Id
+///
+/// - 有数美 `device_id` 时按其派生：稳定、且**每个账号各不相同**（对齐真实客户端
+///   「一个浏览器 profile 一个设备」）；
+/// - 显式配置了全局 `client_device_id` 时以配置为准（多账号共用一台设备的场景）；
+/// - 都没有时回退到客户端自身的设备身份。
+fn account_x_device_id(creds: &AccountConfig, client: &DsClient) -> String {
+    if !creds.device_id.trim().is_empty() {
+        return super::client::derive_device_uuid(
+            format!("ds-free-api:x-device-id:{}", creds.device_id.trim()).as_bytes(),
+        );
+    }
+    client.device_id().to_string()
+}
+
 async fn try_init_account(
     creds: &AccountConfig,
     client: &DsClient,
@@ -751,6 +788,10 @@ async fn try_init_account(
             "email 和 mobile 不能同时为空".to_string(),
         ));
     }
+
+    // 设备身份按账号派生（空 device_id 时回退到全局配置的 X-Device-Id）
+    let x_device_id = account_x_device_id(creds, client);
+    let client = &client.scoped_to(&x_device_id);
 
     let login_payload = LoginPayload {
         email: creds.email.clone(),
@@ -850,6 +891,7 @@ async fn try_init_account(
         error_count: AtomicU8::new(0),
         creds: creds.clone(),
         window: SlidingWindowRateLimiter::new(),
+        client: client.clone(),
     })
 }
 
@@ -939,6 +981,20 @@ async fn health_check(
 mod tests {
     use super::*;
 
+    /// 测试用客户端：HIF 关闭，设备身份由 api_base 派生（不发起网络请求）
+    fn test_client() -> DsClient {
+        DsClient::new(
+            "https://example.invalid/api/v0".to_string(),
+            "https://example.invalid/x.wasm".to_string(),
+            super::super::client::ClientIdentity::default(),
+            &super::super::client::HifConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            None,
+        )
+    }
+
     fn account(email: &str, device_id: &str) -> AccountConfig {
         AccountConfig {
             email: email.to_string(),
@@ -947,6 +1003,20 @@ mod tests {
             password: "pw".to_string(),
             device_id: device_id.to_string(),
         }
+    }
+
+    #[test]
+    fn per_account_device_identity_is_unique_and_stable() {
+        let client = test_client();
+        let a1 = account_x_device_id(&account("a@example.com", "shumei-device-a"), &client);
+        let a2 = account_x_device_id(&account("a@example.com", "shumei-device-a"), &client);
+        let b = account_x_device_id(&account("b@example.com", "shumei-device-b"), &client);
+        assert_eq!(a1, a2, "同一账号的设备身份必须稳定");
+        assert_ne!(a1, b, "不同账号不得共用同一个 X-Device-Id");
+        assert_eq!(a1.len(), 36);
+        // 无 device_id 时回退到客户端自身身份
+        let fallback = account_x_device_id(&account("c@example.com", ""), &client);
+        assert_eq!(fallback, client.device_id());
     }
 
     #[test]
@@ -960,7 +1030,7 @@ mod tests {
 
     #[test]
     fn quota_of_zero_means_unlimited() {
-        let a = Account::new_invalid(account("a@example.com", "dev"), 0);
+        let a = Account::new_invalid(account("a@example.com", "dev"), 0, &test_client());
         for _ in 0..500 {
             a.record_request(0);
         }
@@ -969,7 +1039,7 @@ mod tests {
 
     #[test]
     fn account_is_blocked_after_reaching_quota() {
-        let a = Account::new_invalid(account("a@example.com", "dev"), 3);
+        let a = Account::new_invalid(account("a@example.com", "dev"), 3, &test_client());
         let limit = 3;
         assert!(a.within_quota(limit));
         a.record_request(limit);
@@ -1033,6 +1103,7 @@ mod tests {
             error_count: AtomicU8::new(0),
             creds: account(email, "dev"),
             window: SlidingWindowRateLimiter::new(),
+            client: test_client(),
         })
     }
 
