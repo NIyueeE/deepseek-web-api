@@ -359,7 +359,7 @@ pub struct ResponseFormat {
     pub json_schema: Option<serde_json::Value>,
 }
 
-pub(crate) fn default_true() -> bool {
+pub(crate) const fn default_true() -> bool {
     true
 }
 

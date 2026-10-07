@@ -40,7 +40,7 @@ struct StreamState {
 }
 
 impl StreamState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             block_kind: BlockKind::None,
             block_index: 0,
@@ -53,9 +53,9 @@ impl StreamState {
         }
     }
 
-    fn start(&mut self, id: String, model: String) {
-        self.message_id = map_id(&id);
-        self.model = model;
+    fn start(&mut self, id: &str, model: &str) {
+        self.message_id = map_id(id);
+        model.clone_into(&mut self.model);
         self.started = true;
     }
 
@@ -89,7 +89,7 @@ impl StreamState {
         events
     }
 
-    fn handle_chunk(&mut self, chunk: ChatCompletionsResponseChunk) -> Vec<MessagesResponseChunk> {
+    fn handle_chunk(&mut self, chunk: &ChatCompletionsResponseChunk) -> Vec<MessagesResponseChunk> {
         let mut events = Vec::new();
 
         // 保活块 → 发送协议规定的 `ping` 事件
@@ -107,7 +107,7 @@ impl StreamState {
             && let Some(choice) = chunk.choices.first()
             && choice.delta.role == Some("assistant")
         {
-            self.start(chunk.id, chunk.model);
+            self.start(&chunk.id, &chunk.model);
             if let Some(ref u) = chunk.usage {
                 self.input_tokens = u.prompt_tokens;
             }
@@ -238,7 +238,7 @@ pin_project! {
 }
 
 impl<S> AnthropicStream<S> {
-    fn new(inner: S) -> Self {
+    const fn new(inner: S) -> Self {
         Self {
             inner,
             state: StreamState::new(),
@@ -267,7 +267,7 @@ where
                 Poll::Ready(Some(Ok(chunk))) => {
                     trace!(target: "anthropic_compat::response::stream", "<<< {}",
                         serde_json::to_string(&chunk).unwrap_or_default());
-                    let events = this.state.handle_chunk(chunk);
+                    let events = this.state.handle_chunk(&chunk);
                     this.pending_events.extend(events);
                     if !this.pending_events.is_empty() {
                         let event = this.pending_events.remove(0);
@@ -281,8 +281,7 @@ where
                     if !this.state.finished {
                         debug!(
                             target: "anthropic_compat::response::stream",
-                            "上游流错误后补齐 Anthropic 收尾事件: {}",
-                            e
+                            "上游流错误后补齐 Anthropic 收尾事件: {e}"
                         );
                         this.state.finished = true;
                         let mut events: Vec<MessagesResponseChunk> =

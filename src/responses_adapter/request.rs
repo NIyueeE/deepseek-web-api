@@ -380,10 +380,7 @@ fn convert_tool_choice(choice: &serde_json::Value) -> Option<ToolChoice> {
                         .and_then(|v| v.as_str())
                         .unwrap_or("auto")
                         .to_string();
-                    let tools = obj
-                        .get("tools")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| arr.to_vec());
+                    let tools = obj.get("tools").and_then(|v| v.as_array()).cloned();
                     Some(ToolChoice::AllowedTools(
                         crate::openai_adapter::types::AllowedToolsChoice {
                             ty: "allowed_tools".to_string(),
@@ -628,7 +625,7 @@ mod tests {
                     "https://example.com/a.png"
                 );
             }
-            other => panic!("expected parts, got {other:?}"),
+            other @ OaiMessageContent::Text(_) => panic!("expected parts, got {other:?}"),
         }
     }
 

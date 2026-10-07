@@ -8,11 +8,14 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use std::collections::HashMap;
+
 use bytes::Bytes;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 
 use ds_core::{AccountConfig, CoreError, DsCore, DsCoreConfig};
-use std::collections::HashMap;
+
+use self::types::{FunctionCallOption, NamedFunction, NamedToolChoice, Tool, ToolChoice};
 
 mod models;
 pub(crate) mod request;
@@ -123,12 +126,9 @@ impl OpenAIAdapter {
         request_id: &str,
     ) -> Result<ChatResult<ChatOutput>, OpenAIAdapterError> {
         log::debug!(target: "adapter", "req={} adapter start: model={}, stream={}", request_id, req.model, req.stream);
-        use crate::openai_adapter::types::{
-            FunctionCallOption, NamedFunction, NamedToolChoice, Tool, ToolChoice,
-        };
 
         // 兼容旧版 functions / function_call → tools / tool_choice
-        if req.tools.as_ref().map(|t| t.is_empty()).unwrap_or(true)
+        if req.tools.as_ref().is_none_or(|t| t.is_empty())
             && let Some(functions) = req.functions.clone()
             && !functions.is_empty()
         {
@@ -158,24 +158,23 @@ impl OpenAIAdapter {
         let norm = request::normalize::apply(&req).map_err(OpenAIAdapterError::BadRequest)?;
         let tool_ctx = request::tools::extract(&req).map_err(OpenAIAdapterError::BadRequest)?;
         let prompt = request::prompt::build(&req, &tool_ctx);
-        let registry = self.model_registry.read().await;
-        let model_res = request::resolver::resolve(
-            &registry,
-            &req.model,
-            req.reasoning_effort.as_deref(),
-            req.web_search_options.as_ref(),
-            self.default_search(),
-        )
-        .map_err(OpenAIAdapterError::BadRequest)?;
+        // 读锁只覆盖模型解析，避免后续网络等待期间阻塞配置热重载
+        let model_res = {
+            let registry = self.model_registry.read().await;
+            request::resolver::resolve(
+                &registry,
+                &req.model,
+                req.reasoning_effort.as_deref(),
+                req.web_search_options.as_ref(),
+                self.default_search(),
+            )
+            .map_err(OpenAIAdapterError::BadRequest)?
+        };
 
-        let prompt_tokens = self
-            .bpe
-            .as_ref()
-            .map(|bpe| {
-                u32::try_from(bpe.encode_with_special_tokens(&prompt).len())
-                    .expect("token count exceeds u32::MAX")
-            })
-            .unwrap_or(0);
+        let prompt_tokens = self.bpe.as_ref().map_or(0, |bpe| {
+            u32::try_from(bpe.encode_with_special_tokens(&prompt).len())
+                .expect("token count exceeds u32::MAX")
+        });
 
         let file_result = request::files::extract(&req);
         let chat_req = ds_core::ChatRequest {
@@ -188,7 +187,7 @@ impl OpenAIAdapter {
 
         let chat_resp = self.try_chat(chat_req, request_id).await?;
         let (account_id, event_stream) = Self::take_meta(chat_resp.stream).await.map_err(|e| {
-            log::error!(target: "adapter", "req={} failed to read Meta event: {}", request_id, e);
+            log::error!(target: "adapter", "req={request_id} failed to read Meta event: {e}");
             OpenAIAdapterError::Internal("取 Meta 事件失败".into())
         })?;
 
@@ -263,7 +262,7 @@ impl OpenAIAdapter {
             match self.ds_core.v0_chat(req.clone(), request_id).await {
                 Ok(resp) => {
                     if attempt > 0 {
-                        log::info!(target: "adapter", "req={} retry #{} succeeded", request_id, attempt);
+                        log::info!(target: "adapter", "req={request_id} retry #{attempt} succeeded");
                     }
                     return Ok(resp);
                 }
@@ -275,7 +274,7 @@ impl OpenAIAdapter {
                 Err(e) => return Err(e),
             }
         }
-        log::warn!(target: "adapter", "req={} all {} retries failed, giving up", request_id, MAX_RETRIES);
+        log::warn!(target: "adapter", "req={request_id} all {MAX_RETRIES} retries failed, giving up");
         Err(CoreError::Overloaded)
     }
 
@@ -312,16 +311,18 @@ impl OpenAIAdapter {
         request_id: &str,
     ) -> Result<ChatResult<StreamResponse>, OpenAIAdapterError> {
         let chat_req: ChatCompletionsRequest = serde_json::from_slice(body)
-            .map_err(|e| OpenAIAdapterError::BadRequest(format!("bad request: {}", e)))?;
-        let registry = self.model_registry.read().await;
-        let model_res = request::resolver::resolve(
-            &registry,
-            &chat_req.model,
-            chat_req.reasoning_effort.as_deref(),
-            chat_req.web_search_options.as_ref(),
-            self.default_search(),
-        )
-        .map_err(OpenAIAdapterError::BadRequest)?;
+            .map_err(|e| OpenAIAdapterError::BadRequest(format!("bad request: {e}")))?;
+        let model_res = {
+            let registry = self.model_registry.read().await;
+            request::resolver::resolve(
+                &registry,
+                &chat_req.model,
+                chat_req.reasoning_effort.as_deref(),
+                chat_req.web_search_options.as_ref(),
+                self.default_search(),
+            )
+            .map_err(OpenAIAdapterError::BadRequest)?
+        };
         let ds_req = ds_core::ChatRequest {
             prompt: request::prompt::build(
                 &chat_req,
@@ -336,10 +337,9 @@ impl OpenAIAdapter {
         let (account_id, event_stream) = Self::take_meta(chat_resp.stream).await?;
 
         // 将 StreamEvent 序列化为 JSON 行供调试
-        use futures::StreamExt;
         let data: StreamResponse = Box::pin(event_stream.map(|r| {
             r.map(|evt| {
-                let line = format!("{:?}\n", evt);
+                let line = format!("{evt:?}\n");
                 Bytes::from(line.into_bytes())
             })
             .map_err(OpenAIAdapterError::from)
@@ -388,11 +388,8 @@ impl OpenAIAdapter {
     }
 
     /// 动态移除账号
-    pub async fn remove_account(
-        &self,
-        email_or_mobile: &str,
-    ) -> Result<String, ds_core::PoolError> {
-        self.ds_core.remove_account(email_or_mobile).await
+    pub fn remove_account(&self, email_or_mobile: &str) -> Result<String, ds_core::PoolError> {
+        self.ds_core.remove_account(email_or_mobile)
     }
 
     /// 标记账号为 Error 状态
@@ -433,7 +430,7 @@ impl OpenAIAdapter {
                 match self.add_account(acct).await {
                     Ok(_) => _added += 1,
                     Err(e) => {
-                        log::warn!(target: "adapter", "failed to add account during sync {}: {}", id, e);
+                        log::warn!(target: "adapter", "failed to add account during sync {id}: {e}");
                         _failed += 1;
                     }
                 }
@@ -453,10 +450,10 @@ impl OpenAIAdapter {
             .collect();
         for old_id in &old_ids {
             if !new_ids.contains(&old_id.as_str()) && !old_id.is_empty() {
-                match self.remove_account(old_id).await {
+                match self.remove_account(old_id) {
                     Ok(_) => _removed += 1,
                     Err(e) => {
-                        log::warn!(target: "adapter", "failed to remove account during sync {}: {}", old_id, e);
+                        log::warn!(target: "adapter", "failed to remove account during sync {old_id}: {e}");
                     }
                 }
             }
@@ -557,20 +554,23 @@ impl OpenAIAdapter {
             let tag_config = tag_config.clone();
             let tools_info = tools_info.clone();
             Box::pin(async move {
+                use std::fmt::Write as _;
+
                 use ds_core::ChatRequest;
                 let n = seq.fetch_add(1, Ordering::Relaxed);
-                let repair_req_id = format!("{}-repair-{}", req_id, n);
-                let mut prompt = String::new();
+                let repair_req_id = format!("{req_id}-repair-{n}");
+                let mut prompt = String::with_capacity(tools_info.len() + tool_text.len() + 256);
                 if !tools_info.is_empty() {
-                    prompt.push_str(&format!("可用的工具定义：\n{}\n\n", tools_info));
+                    let _ = write!(prompt, "可用的工具定义：\n{tools_info}\n\n");
                 }
-                prompt.push_str(&format!(
+                let _ = write!(
+                    prompt,
                     "请将以下代码块中的内容提取并转换为合法的工具调用 JSON 数组。\
                      \n每个元素必须包含 \"name\"（字符串）和 \"arguments\"（对象）字段。\
                      \n只输出 JSON 数组本身，不要加 code fence，不要其他文字解释。\
                      \n注意：字符串值中的引号和换行符必须用反斜杠转义（如 \\\" 和 \\n）。\
                      \n\n需要修复的内容：\n~~~\n{tool_text}\n~~~"
-                ));
+                );
                 let req = ChatRequest {
                     prompt,
                     thinking_enabled: false,
@@ -621,7 +621,7 @@ impl From<CoreError> for OpenAIAdapterError {
         match e {
             CoreError::Overloaded => Self::Overloaded,
             CoreError::ProofOfWorkFailed(err) => {
-                Self::Internal(format!("proof of work failed: {}", err))
+                Self::Internal(format!("proof of work failed: {err}"))
             }
             CoreError::ProviderError(msg) => Self::ProviderError(msg),
             CoreError::Stream(msg) => Self::Internal(msg),
@@ -631,14 +631,14 @@ impl From<CoreError> for OpenAIAdapterError {
 
 impl From<serde_json::Error> for OpenAIAdapterError {
     fn from(e: serde_json::Error) -> Self {
-        Self::Internal(format!("json serialization failed: {}", e))
+        Self::Internal(format!("json serialization failed: {e}"))
     }
 }
 
 impl OpenAIAdapterError {
     /// 返回对应 HTTP 状态码
     #[must_use]
-    pub fn status_code(&self) -> u16 {
+    pub const fn status_code(&self) -> u16 {
         match self {
             Self::BadRequest(_) => 400,
             Self::Overloaded => 429,

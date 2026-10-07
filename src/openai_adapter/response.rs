@@ -36,7 +36,7 @@ static CHATCMPL_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 
 fn next_chatcmpl_id() -> String {
     let n = CHATCMPL_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("chatcmpl-{:016x}", n)
+    format!("chatcmpl-{n:016x}")
 }
 
 pub(crate) fn now_secs() -> u64 {
@@ -81,7 +81,7 @@ fn find_stop_pos(content: &str, stop: &[String]) -> Option<usize> {
 ///
 /// 多语言输出（中文 / 日文 / 俄文）下 stop 串的字节位置可能落在 UTF-8
 /// 续字节上，直接切片会 panic。
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+const fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
     if idx >= s.len() {
         return s.len();
     }
@@ -258,8 +258,8 @@ impl Stream for RepairStream {
                         ))));
                     }
                     Poll::Ready(Err(e)) => {
-                        warn!(target: "adapter", "tool_calls repair failed: {}", e);
-                        *this.state = RepairState::RepairFailed(format!("修复失败: {}", e));
+                        warn!(target: "adapter", "tool_calls repair failed: {e}");
+                        *this.state = RepairState::RepairFailed(format!("修复失败: {e}"));
                         continue;
                     }
                     Poll::Pending => {
@@ -349,7 +349,7 @@ where
                     {
                         this.buffer.push_str(content);
                         if let Some(pos) = find_stop_pos(this.buffer, this.stop) {
-                            trace!(target: "adapter", ">>> stop: truncate at {}", pos);
+                            trace!(target: "adapter", ">>> stop: truncate at {pos}");
                             // sent_len 可能已经越过 stop 位置（stop 串跨 chunk / 多语言字节边界），
                             // 此时没有新内容可发；同时两端都对齐到 char 边界避免切片 panic。
                             let safe_start =
@@ -371,7 +371,7 @@ where
                     }
                     if *this.include_obfuscation && !chunk.choices.is_empty() {
                         let without = serde_json::to_string(&chunk)
-                            .map_err(|e| OpenAIAdapterError::Internal(format!("json: {}", e)))?;
+                            .map_err(|e| OpenAIAdapterError::Internal(format!("json: {e}")))?;
                         let overhead = r#","obfuscation":"""#.len();
                         let pad_len = if without.len() + overhead < OBFUSCATION_TARGET_LEN {
                             OBFUSCATION_TARGET_LEN - without.len() - overhead
@@ -1235,8 +1235,7 @@ mod tests {
                 let len = serde_json::to_string(c).unwrap().len();
                 assert!(
                     (490..=530).contains(&len),
-                    "chunk len {} out of expected 490..=530 range",
-                    len
+                    "chunk len {len} out of expected 490..=530 range"
                 );
             }
         }

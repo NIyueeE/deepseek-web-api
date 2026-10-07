@@ -63,10 +63,10 @@ pub enum ServerError {
 impl fmt::Display for ServerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Adapter(e) => write!(f, "{}", e),
-            Self::Anthropic(e) => write!(f, "{}", e),
+            Self::Adapter(e) => write!(f, "{e}"),
+            Self::Anthropic(e) => write!(f, "{e}"),
             Self::Unauthorized => write!(f, "invalid api token"),
-            Self::NotFound(id) => write!(f, "模型 '{}' 不存在", id),
+            Self::NotFound(id) => write!(f, "模型 '{id}' 不存在"),
         }
     }
 }

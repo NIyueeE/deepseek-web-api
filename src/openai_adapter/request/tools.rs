@@ -20,7 +20,7 @@ pub(crate) struct ToolContext {
 }
 
 fn has_tools(req: &ChatCompletionsRequest) -> bool {
-    req.tools.as_ref().map(|t| !t.is_empty()).unwrap_or(false)
+    req.tools.as_ref().is_some_and(|t| !t.is_empty())
 }
 
 /// 从请求中提取并校验工具信息
@@ -102,11 +102,9 @@ fn validate_tool_choice(tc: &ToolChoice, tools: Option<&[Tool]>) -> Result<(), S
     match tc {
         ToolChoice::Mode(mode) => {
             if !matches!(mode.as_str(), "none" | "auto" | "required") {
-                return Err(format!("tool_choice 无效模式: {}", mode));
+                return Err(format!("tool_choice 无效模式: {mode}"));
             }
-            if matches!(mode.as_str(), "auto" | "required")
-                && tools.map(|t| t.is_empty()).unwrap_or(true)
-            {
+            if matches!(mode.as_str(), "auto" | "required") && tools.is_none_or(|t| t.is_empty()) {
                 return Err("tool_choice 为 'auto' 或 'required' 时必须提供 tools".into());
             }
             Ok(())
@@ -156,7 +154,7 @@ fn format_tool(tool: &Tool, idx: usize) -> Result<String, String> {
     match tool.ty.as_str() {
         "function" => {
             let func = tool.function.as_ref().ok_or_else(|| {
-                format!("tools[{}] 类型为 'function' 时必须提供 function 定义", idx)
+                format!("tools[{idx}] 类型为 'function' 时必须提供 function 定义")
             })?;
             format_function(func)
         }
@@ -164,7 +162,7 @@ fn format_tool(tool: &Tool, idx: usize) -> Result<String, String> {
             let custom = tool
                 .custom
                 .as_ref()
-                .ok_or_else(|| format!("tools[{}] 类型为 'custom' 时必须提供 custom 定义", idx))?;
+                .ok_or_else(|| format!("tools[{idx}] 类型为 'custom' 时必须提供 custom 定义"))?;
             Ok(format_custom(custom))
         }
         _ => Err(format!("tools[{}] 不支持的类型: {}", idx, tool.ty)),
@@ -184,7 +182,7 @@ fn format_function(func: &FunctionDefinition) -> Result<String, String> {
     let desc_block = if desc.is_empty() {
         "  无描述".to_string()
     } else {
-        format!("~~~markdown\n  {}\n~~~\n", desc)
+        format!("~~~markdown\n  {desc}\n~~~\n")
     };
     Ok(format!(
         "- **{}** (function):\n  - 调用方法: `{}`\n  - 简要说明:\n{}",
@@ -245,7 +243,7 @@ fn build_tool_instruction_block(req: &ChatCompletionsRequest) -> String {
         .iter()
         .filter_map(|t| t.function.as_ref().map(|f| f.name.clone()))
         .collect();
-    let a = tool_names.first().map(|s| s.as_str()).unwrap_or("tool_a");
+    let a = tool_names.first().map_or("tool_a", |s| s.as_str());
 
     // 正确示例（使用实际工具名，带真实参数）
     lines.push("**正确示例：**".into());
@@ -291,7 +289,7 @@ fn build_tool_instruction_block(req: &ChatCompletionsRequest) -> String {
 
     // 示例D：嵌套参数（参数值为数组或对象时仍是标准 JSON）
     if !tool_names.is_empty() {
-        let d_name = tool_names.first().map(|s| s.as_str()).unwrap_or("tool_a");
+        let d_name = tool_names.first().map_or("tool_a", |s| s.as_str());
         lines.push("**示例D** — 参数值为嵌套对象/数组（仍然是标准 JSON）：".into());
         lines.push(String::new());
         lines.push(format!(

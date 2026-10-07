@@ -20,6 +20,9 @@ use super::response::{
 
 // ── 常量 ──────────────────────────────────────────────────────────────
 
+/// 超限路径的最大尝试次数（含首次）：失败后重试不会改变结果，仅覆盖瞬时错误
+const MAX_ATTEMPTS: usize = 3;
+
 const TAG_START: &str = "<｜";
 const TAG_END: &str = "｜>";
 const SESSION_HISTORY_FILE: &str = "EMPTY.txt";
@@ -53,7 +56,7 @@ impl SessionGuard {
     }
 
     /// 放弃清理责任（session 已交由 `SessionHandle` 在流结束时删除）
-    fn disarm(&mut self) {
+    const fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -69,13 +72,13 @@ impl Drop for SessionGuard {
         let session_id = self.session_id.clone();
         log::debug!(
             target: "ds_core::accounts",
-            "session guard deleting orphan session: id={}", session_id
+            "session guard deleting orphan session: id={session_id}"
         );
         tokio::spawn(async move {
             if let Err(e) = client.delete_session(&token, &session_id).await {
                 log::warn!(
                     target: "ds_core::accounts",
-                    "delete_session failed for {}: {}", session_id, e
+                    "delete_session failed for {session_id}: {e}"
                 );
             }
         });
@@ -139,7 +142,6 @@ impl Chat {
         }
 
         // 不超限：所有模型统一直发（完整 prompt，无历史拆分，无文件上传回退）
-        const MAX_ATTEMPTS: usize = 3;
         for attempt in 0..MAX_ATTEMPTS {
             let first_try = attempt == 0;
             match self
@@ -175,8 +177,6 @@ impl Chat {
         req: &ChatRequest,
         request_id: &str,
     ) -> Result<ChatResponse, CoreError> {
-        const MAX_ATTEMPTS: usize = 3;
-
         let (inline_prompt, history_content) = split_history_prompt(&req.prompt);
 
         if !history_content.is_empty() {
@@ -229,7 +229,7 @@ impl Chat {
             .ok_or_else(|| {
                 log::warn!(
                     target: "ds_core::accounts",
-                    "req={} 账号池无可用账号", request_id
+                    "req={request_id} 账号池无可用账号"
                 );
                 CoreError::Overloaded
             })?;
@@ -239,7 +239,7 @@ impl Chat {
 
         log::debug!(
             target: "ds_core::accounts",
-            "req={} 分块写入: model_type=expert, account={}", request_id, account_id
+            "req={request_id} 分块写入: model_type=expert, account={account_id}"
         );
 
         // 2. 创建 session（所有 chunk 共享）
@@ -308,7 +308,12 @@ impl Chat {
                 chat_session_id: session_id.clone(),
                 message_id: stop_id,
             };
-            let _ = self.accounts.stop_stream(&account, &stop_payload).await;
+            if let Err(e) = self.accounts.stop_stream(&account, &stop_payload).await {
+                log::debug!(
+                    target: "ds_core::accounts",
+                    "req={request_id} 发送 stop_stream 失败（继续等待 close）: {e}"
+                );
+            }
 
             // 消费流直到 close 事件
             wait_close(
@@ -388,13 +393,11 @@ impl Chat {
                             .unwrap_or_default();
                         log::error!(
                             target: "ds_core::accounts",
-                            "req={} SSE 流返回业务错误: biz_code={}, biz_msg={}",
-                            request_id, biz_code, biz_msg
+                            "req={request_id} SSE 流返回业务错误: biz_code={biz_code}, biz_msg={biz_msg}"
                         );
                         self.accounts.mark_error(&account_id);
                         return CoreError::ProviderError(format!(
-                            "biz_code={}, {}",
-                            biz_code, biz_msg
+                            "biz_code={biz_code}, {biz_msg}"
                         ));
                     }
                     if raw.trim().starts_with('{') {
@@ -424,10 +427,10 @@ impl Chat {
 
         // 检查 hint 事件
         if let Some(err) = check_hint(&second_block) {
-            if let CoreError::Overloaded = &err {
+            if matches!(&err, CoreError::Overloaded) {
                 log::warn!(
                     target: "ds_core::accounts",
-                    "req={} hint 限流: rate_limit_reached", request_id
+                    "req={request_id} hint 限流: rate_limit_reached"
                 );
                 self.accounts.mark_error(&account_id);
             } else {
@@ -443,19 +446,19 @@ impl Chat {
                     .unwrap_or_else(|| "(unknown)".into());
                 log::warn!(
                     target: "ds_core::accounts",
-                    "req={} hint 错误: {}", request_id, hint_detail
+                    "req={request_id} hint 错误: {hint_detail}"
                 );
             }
             log::debug!(
                 target: "ds_core::accounts",
-                "req={} hint 后清理 session: id={}", request_id, session_id
+                "req={request_id} hint 后清理 session: id={session_id}"
             );
             return Err(err);
         }
 
         log::debug!(
             target: "ds_core::accounts",
-            "req={} SSE ready: resp_msg={}", request_id, stop_id
+            "req={request_id} SSE ready: resp_msg={stop_id}"
         );
 
         // 注册活跃 session
@@ -513,7 +516,7 @@ impl Chat {
         .ok_or_else(|| {
             log::warn!(
                 target: "ds_core::accounts",
-                "req={} 账号池无可用账号", request_id
+                "req={request_id} 账号池无可用账号"
             );
             CoreError::Overloaded
         })?;
@@ -542,8 +545,7 @@ impl Chat {
         let mut session_guard = SessionGuard::new(account.client(), &token, &session_id);
         log::info!(
             target: "ds_core::accounts",
-            "req={} session_created: id={}, create_ms={}, account={}",
-            request_id, session_id, session_create_ms, account_id
+            "req={request_id} session_created: id={session_id}, create_ms={session_create_ms}, account={account_id}"
         );
 
         // 3. 上传文件：先历史文件，再外部文件
@@ -566,7 +568,7 @@ impl Chat {
                 Err(e) => {
                     log::warn!(
                         target: "ds_core::accounts",
-                        "req={} 历史文件上传失败，退回内联发送: {}", request_id, e
+                        "req={request_id} 历史文件上传失败，退回内联发送: {e}"
                     );
                     history_upload_failed = true;
                 }
@@ -670,13 +672,11 @@ impl Chat {
                             .unwrap_or_default();
                         log::error!(
                             target: "ds_core::accounts",
-                            "req={} SSE 流返回业务错误: biz_code={}, biz_msg={}",
-                            request_id, biz_code, biz_msg
+                            "req={request_id} SSE 流返回业务错误: biz_code={biz_code}, biz_msg={biz_msg}"
                         );
                         self.accounts.mark_error(&account_id);
                         return CoreError::ProviderError(format!(
-                            "biz_code={}, {}",
-                            biz_code, biz_msg
+                            "biz_code={biz_code}, {biz_msg}"
                         ));
                     }
                     log::error!(
@@ -700,10 +700,10 @@ impl Chat {
 
         // 7. 检查 hint 事件
         if let Some(err) = check_hint(&second_block) {
-            if let CoreError::Overloaded = &err {
+            if matches!(&err, CoreError::Overloaded) {
                 log::warn!(
                     target: "ds_core::accounts",
-                    "req={} hint 限流: rate_limit_reached", request_id
+                    "req={request_id} hint 限流: rate_limit_reached"
                 );
                 self.accounts.mark_error(&account_id);
             } else {
@@ -719,7 +719,7 @@ impl Chat {
                     .unwrap_or_else(|| "(unknown)".into());
                 log::warn!(
                     target: "ds_core::accounts",
-                    "req={} hint 错误: {}", request_id, hint_detail
+                    "req={request_id} hint 错误: {hint_detail}"
                 );
             }
             let hint_ms = completion_start.elapsed().as_millis();
@@ -846,7 +846,7 @@ fn role_tag(role: &str) -> String {
     if let Some(c) = r.get_mut(0..1) {
         c.make_ascii_uppercase();
     }
-    format!("<｜{}｜>", r)
+    format!("<｜{r}｜>")
 }
 
 /// 解析 DeepSeek 原生标签格式的 prompt 为结构化块
@@ -929,8 +929,10 @@ mod tests {
     fn split_prompt_chunks_respects_tag_boundaries() {
         let mut prompt = String::new();
         for i in 0..40 {
+            use std::fmt::Write as _;
+
             prompt.push_str("<｜User｜>");
-            prompt.push_str(&format!("这是第 {i} 条用户消息, 用来把 prompt 撑长一些。"));
+            let _ = write!(prompt, "这是第 {i} 条用户消息, 用来把 prompt 撑长一些。");
             prompt.push_str("<｜Assistant｜>好的，收到。\n");
         }
         let chunks = split_prompt_chunks(&prompt, 500);

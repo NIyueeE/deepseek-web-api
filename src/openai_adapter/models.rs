@@ -42,7 +42,7 @@ pub fn model_ids(model_types: &[String], aliases: &[String]) -> Vec<(String, usi
 
     // 1) 标准 ID：deepseek-<type>
     for (idx, ty) in model_types.iter().enumerate() {
-        push(format!("deepseek-{}", ty), idx, &mut ids, &mut seen);
+        push(format!("deepseek-{ty}"), idx, &mut ids, &mut seen);
     }
 
     // 2) 用户别名（按 index 对齐 model_types）

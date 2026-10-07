@@ -4,6 +4,19 @@ members = ["ds_core"]
 [workspace.lints.rust]
 unsafe_code = "deny"
 unused_import_braces = "deny"
+# ── 冗余 / 生命周期表达 ────────────────────────────────────
+unused_lifetimes = "deny"
+single_use_lifetimes = "deny"
+elided_lifetimes_in_paths = "deny"
+explicit_outlives_requirements = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+absolute_paths_not_starting_with_crate = "deny"
+meta_variable_misuse = "deny"
+unused_extern_crates = "deny"
+non_ascii_idents = "deny"
+# `let _ = guard;` 会立刻释放 RAII 守卫（锁 / 账号 / 会话），必须显式绑定后再 drop
+let_underscore_drop = "deny"
 
 [workspace.lints.clippy]
 # ── 基线 ──────────────────────────────────────────────────
@@ -14,11 +27,17 @@ await_holding_lock = "deny"
 panic_in_result_fn = "deny"
 cast_lossless = "deny"
 cast_sign_loss = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_precision_loss = "deny"
+unchecked_time_subtraction = "deny"
 while_float = "deny"
 missing_assert_message = "deny"
 inconsistent_struct_constructor = "deny"
+branches_sharing_code = "deny"
+match_wildcard_for_single_variants = "deny"
 
-# ── 代码质量 & 性能 ────────────────────────────────────────
+# ── 零拷贝 / 分配 ──────────────────────────────────────────
 redundant_clone = "deny"
 or_fun_call = "deny"
 string_add = "deny"
@@ -30,6 +49,16 @@ len_zero = "deny"
 large_enum_variant = "deny"
 unnecessary_cast = "deny"
 unnecessary_wraps = "deny"
+needless_pass_by_value = "deny"
+assigning_clones = "deny"
+implicit_clone = "deny"
+map_unwrap_or = "deny"
+format_push_string = "deny"
+format_collect = "deny"
+uninlined_format_args = "deny"
+
+# ── 并发 / 锁 ──────────────────────────────────────────────
+significant_drop_tightening = "deny"
 
 # ── 代码风格 & 可读性 ──────────────────────────────────────
 option_if_let_else = "deny"
@@ -41,6 +70,7 @@ match_same_arms = "deny"
 if_not_else = "deny"
 unnested_or_patterns = "deny"
 explicit_into_iter_loop = "deny"
+explicit_iter_loop = "deny"
 range_plus_one = "deny"
 default_trait_access = "deny"
 semicolon_if_nothing_returned = "deny"
@@ -48,6 +78,17 @@ used_underscore_binding = "deny"
 wildcard_imports = "deny"
 struct_excessive_bools = "deny"
 derive_partial_eq_without_eq = "deny"
+items_after_statements = "deny"
+equatable_if_let = "deny"
+ignored_unit_patterns = "deny"
+needless_raw_string_hashes = "deny"
+unnecessary_semicolon = "deny"
+unreadable_literal = "deny"
+duration_suboptimal_units = "deny"
+missing_const_for_fn = "deny"
+unused_async = "deny"
+doc_link_with_quotes = "deny"
+missing_fields_in_debug = "deny"
 
 # ── 已通过检查保留 ────────────────────────────────────────
 unused_self = "deny"

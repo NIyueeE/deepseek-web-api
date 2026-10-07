@@ -101,7 +101,7 @@ pub(crate) fn into_chat_completions(req: MessagesRequest) -> ChatCompletionsRequ
 // 辅助函数
 // ============================================================================
 
-fn empty_message(role: String, content: OaiMessageContent) -> Message {
+const fn empty_message(role: String, content: OaiMessageContent) -> Message {
     Message {
         role,
         content: Some(content),
@@ -218,7 +218,7 @@ fn infer_doc_filename(mime: &str) -> String {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
         _ => "doc",
     };
-    format!("document.{}", ext)
+    format!("document.{ext}")
 }
 
 /// 将 user 的 content blocks 映射为 OpenAI 消息
@@ -234,7 +234,7 @@ fn user_blocks_to_messages(blocks: &[ContentBlock]) -> Vec<Message> {
             ContentBlock::Image { source } => {
                 let url = match source {
                     ImageSource::Base64 { data, media_type } => {
-                        format!("data:{};base64,{}", media_type, data)
+                        format!("data:{media_type};base64,{data}")
                     }
                     ImageSource::Url { url } => url.clone(),
                 };
@@ -242,13 +242,13 @@ fn user_blocks_to_messages(blocks: &[ContentBlock]) -> Vec<Message> {
             }
             ContentBlock::Document { source, title } => match source {
                 ImageSource::Base64 { data, media_type } => {
-                    let data_url = format!("data:{};base64,{}", media_type, data);
+                    let data_url = format!("data:{media_type};base64,{data}");
                     let filename = infer_doc_filename(media_type);
                     let desc = title
                         .as_deref()
                         .filter(|t| !t.is_empty())
                         .unwrap_or(&filename);
-                    text_parts.push(format!("[文件: {}]", desc));
+                    text_parts.push(format!("[文件: {desc}]"));
                     file_parts.push(FilePart { data_url, filename });
                 }
                 ImageSource::Url { url } => {
@@ -391,8 +391,7 @@ fn convert_tools_and_choice(req: &MessagesRequest) -> (Option<Vec<Tool>>, Option
     let disable_parallel = req
         .tool_choice
         .as_ref()
-        .map(|tc| tc.disable_parallel())
-        .unwrap_or(false);
+        .is_some_and(|tc| tc.disable_parallel());
 
     let parallel_tool_calls = disable_parallel.then_some(false);
 
@@ -412,7 +411,7 @@ fn convert_tool_choice(tc: &ToolChoice) -> OaiToolChoice {
 }
 
 impl ToolChoice {
-    fn disable_parallel(&self) -> bool {
+    const fn disable_parallel(&self) -> bool {
         match self {
             ToolChoice::Auto {
                 disable_parallel_tool_use,
@@ -642,7 +641,7 @@ mod tests {
                 assert_eq!(nc.ty, "function");
                 assert_eq!(nc.function.name, "get_weather");
             }
-            other => panic!("expected Named, got {:?}", other),
+            other => panic!("expected Named, got {other:?}"),
         }
     }
 
@@ -729,7 +728,7 @@ mod tests {
                     "http://example.com/doc"
                 );
             }
-            other => panic!("expected Parts, got {:?}", other),
+            other => panic!("expected Parts, got {other:?}"),
         }
     }
 
@@ -766,13 +765,12 @@ mod tests {
         ];
         for (image_block, expected_url) in cases {
             let body = format!(
-                r#"{{"model":"deepseek-default","messages":[{{"role":"user","content":[{{"type":"text","text":"Describe this"}},{}]}}],"max_tokens":1024}}"#,
-                image_block
+                r#"{{"model":"deepseek-default","messages":[{{"role":"user","content":[{{"type":"text","text":"Describe this"}},{image_block}]}}],"max_tokens":1024}}"#
             );
             let req = convert(body.as_bytes());
             let parts = match &req.messages[0].content {
                 Some(OaiMessageContent::Parts(parts)) => parts,
-                other => panic!("expected Parts, got {:?}", other),
+                other => panic!("expected Parts, got {other:?}"),
             };
             assert_eq!(parts.len(), 2);
             assert_eq!(parts[1].image_url.as_ref().unwrap().url, expected_url);

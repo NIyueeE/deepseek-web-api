@@ -25,7 +25,7 @@ where
     S: Stream<Item = Result<Bytes, E>> + Send + 'static,
     E: std::fmt::Display + Send + Sync + 'static,
 {
-    pub fn new(stream: S) -> Self {
+    pub const fn new(stream: S) -> Self {
         Self {
             inner: stream,
             extra_headers: Vec::new(),
@@ -48,7 +48,7 @@ where
     fn into_response(self) -> Response {
         let body = Body::from_stream(self.inner.map(|result| {
             result.map_err(|e| {
-                log::error!(target: "http::response", "SSE stream error: {}", e);
+                log::error!(target: "http::response", "SSE stream error: {e}");
                 std::io::Error::other(e.to_string())
             })
         }));

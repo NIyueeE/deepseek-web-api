@@ -47,13 +47,13 @@ pub async fn sign_jwt(store: &StoreManager) -> Option<String> {
 
     let header_b64 = base64url_encode(JWT_HEADER.as_bytes());
     let payload_b64 = base64url_encode(&payload);
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
 
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(signing_input.as_bytes());
     let sig_b64 = base64url_encode(&mac.finalize().into_bytes());
 
-    let token = format!("{}.{}", signing_input, sig_b64);
+    let token = format!("{signing_input}.{sig_b64}");
 
     // 更新 jwt_issued_at（用于吊销旧 token）
     store.set_jwt_issued_at(now).await;
@@ -93,19 +93,11 @@ pub async fn verify_jwt(store: &StoreManager, token: &str) -> bool {
         return false;
     };
 
-    #[derive(Deserialize)]
-    struct JwtPayload {
-        sub: String,
-        iat: u64,
-        exp: u64,
-    }
-
-    let payload: JwtPayload = match serde_json::from_slice(&payload_bytes) {
+    // 复用签发侧的 TokenClaims：字段完全一致，避免再定义一份 payload 结构
+    let payload: TokenClaims = match serde_json::from_slice(&payload_bytes) {
         Ok(p) => p,
         Err(_) => return false,
     };
-    // sub 仅用于反序列化验证，不需要读取
-    let _ = payload.sub;
 
     // 过期检查（60 秒 leeway，对齐原 jsonwebtoken 行为）
     let now = epoch_secs();
@@ -137,7 +129,7 @@ pub struct LoginLimiter {
 }
 
 impl LoginLimiter {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             fail_count: AtomicU64::new(0),
             locked_until: AtomicU64::new(0),
@@ -223,7 +215,7 @@ pub async fn setup_admin(
     store
         .save_admin(password_hash, jwt_secret, 0)
         .await
-        .map_err(|e| format!("保存失败: {}", e))?;
+        .map_err(|e| format!("保存失败: {e}"))?;
 
     sign_jwt(store).await.ok_or_else(|| "JWT 签发失败".into())
 }

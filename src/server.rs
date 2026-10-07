@@ -82,14 +82,14 @@ pub async fn run(config: Config, config_path: PathBuf) -> anyhow::Result<()> {
         store: store.clone(),
         login_limiter: login_limiter.clone(),
     };
-    let router = build_router(state.clone(), cors_origins);
+    let router = build_router(state.clone(), &cors_origins);
 
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
     let listener = TcpListener::bind(&addr).await?;
-    log::info!(target: "http::server", "openai-compatible base_url: http://{}", addr);
-    log::info!(target: "http::server", "responses-compatible base_url: http://{}", addr);
-    log::info!(target: "http::server", "anthropic-compatible base_url: http://{}", addr);
-    log::info!(target: "http::server", "admin panel: http://{}/admin", addr);
+    log::info!(target: "http::server", "openai-compatible base_url: http://{addr}");
+    log::info!(target: "http::server", "responses-compatible base_url: http://{addr}");
+    log::info!(target: "http::server", "anthropic-compatible base_url: http://{addr}");
+    log::info!(target: "http::server", "admin panel: http://{addr}/admin");
 
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
@@ -104,7 +104,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> anyhow::Result<()> {
 }
 
 /// 构建路由器
-fn build_router(state: AppState, cors_origins: Vec<String>) -> Router {
+fn build_router(state: AppState, cors_origins: &[String]) -> Router {
     let store = state.store.clone();
 
     let public = Router::new()
@@ -188,7 +188,7 @@ fn build_router(state: AppState, cors_origins: Vec<String>) -> Router {
     router
         .with_state(state)
         .layer(DefaultBodyLimit::max(10_000_000))
-        .layer(build_cors_layer(&cors_origins))
+        .layer(build_cors_layer(cors_origins))
 }
 
 /// 构建 CORS 层
@@ -216,8 +216,7 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
             Err(e) => {
                 log::warn!(
                     target: "http::server",
-                    "cors_origins 中的 {:?} 不是合法的 Origin（需要包含 scheme，如 http://localhost:22217）：{}",
-                    origin, e
+                    "cors_origins 中的 {origin:?} 不是合法的 Origin（需要包含 scheme，如 http://localhost:22217）：{e}"
                 );
             }
         }
@@ -403,8 +402,8 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        () = ctrl_c => {},
+        () = terminate => {},
     }
 
     log::info!(target: "http::server", "shutdown signal received, starting graceful shutdown");

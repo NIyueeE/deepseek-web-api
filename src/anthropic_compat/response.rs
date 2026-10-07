@@ -32,7 +32,7 @@ pub(crate) fn finish_reason_map(reason: &str) -> String {
         other => {
             log::warn!(
                 target: "anthropic_compat::response",
-                "未知 finish_reason {:?}，按 end_turn 处理", other
+                "未知 finish_reason {other:?}，按 end_turn 处理"
             );
             "end_turn".to_string()
         }
@@ -43,11 +43,11 @@ pub(crate) fn finish_reason_map(reason: &str) -> String {
 pub(crate) fn map_id(openai_id: &str) -> String {
     openai_id
         .strip_prefix("chatcmpl-")
-        .map(|hex| format!("msg_{}", hex))
+        .map(|hex| format!("msg_{hex}"))
         .or_else(|| {
             openai_id
                 .strip_prefix("call_")
-                .map(|suffix| format!("toolu_{}", suffix))
+                .map(|suffix| format!("toolu_{suffix}"))
         })
-        .unwrap_or_else(|| format!("msg_{}", openai_id))
+        .unwrap_or_else(|| format!("msg_{openai_id}"))
 }

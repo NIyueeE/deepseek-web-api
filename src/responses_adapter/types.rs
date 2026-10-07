@@ -197,8 +197,7 @@ impl<'de> Deserialize<'de> for InputItem {
                 .to_string();
             let content = obj
                 .get("content")
-                .map(parse_input_content)
-                .unwrap_or(InputContent::Text(String::new()));
+                .map_or(InputContent::Text(String::new()), parse_input_content);
             return Ok(Self::Message { role, content });
         }
 
@@ -500,7 +499,7 @@ mod tests {
                 assert_eq!(role, "user");
                 match content {
                     InputContent::Text(t) => assert_eq!(t, "hi"),
-                    other => panic!("expected text, got {other:?}"),
+                    other @ InputContent::Parts(_) => panic!("expected text, got {other:?}"),
                 }
             }
             other => panic!("expected message, got {other:?}"),
@@ -510,7 +509,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 match content {
                     InputContent::Parts(parts) => assert_eq!(parts.len(), 1),
-                    other => panic!("expected parts, got {other:?}"),
+                    other @ InputContent::Text(_) => panic!("expected parts, got {other:?}"),
                 }
             }
             other => panic!("expected message, got {other:?}"),

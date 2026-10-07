@@ -9,7 +9,9 @@ mod response;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::accounts::Accounts;
+use futures::future::join_all;
+
+use crate::accounts::{Accounts, StopStreamPayload};
 use crate::config::DsCoreConfig;
 use response::ActiveSession;
 
@@ -44,8 +46,7 @@ impl Chat {
             .position(|t| t == model_type)
             .and_then(|i| self.input_character_limits.get(i))
             .copied()
-            .map(|v| v as usize)
-            .unwrap_or(163_840)
+            .map_or(163_840, |v| v as usize)
     }
 
     /// 优雅关闭：清理所有残留的活跃 session
@@ -64,9 +65,6 @@ impl Chat {
             "shutdown: 清理 {} 个残留 session", sessions.len()
         );
 
-        use crate::accounts::StopStreamPayload;
-        use futures::future::join_all;
-
         let futures: Vec<_> = sessions
             .into_values()
             .map(|s| async move {
@@ -75,17 +73,20 @@ impl Chat {
                     message_id: s.message_id,
                 };
                 let client = s.client.clone();
-                let _ = client.stop_stream(&s.token, &payload).await;
-                let _ = client
-                    .delete_session(&s.token, &s.session_id)
-                    .await
-                    .inspect_err(|e| {
-                        log::warn!(
-                            target: "ds_core::accounts",
-                            "shutdown 清理 session {} 失败: {}",
-                            s.session_id, e
-                        );
-                    });
+                if let Err(e) = client.stop_stream(&s.token, &payload).await {
+                    log::warn!(
+                        target: "ds_core::accounts",
+                        "shutdown 停止 session {} 失败: {}",
+                        s.session_id, e
+                    );
+                }
+                if let Err(e) = client.delete_session(&s.token, &s.session_id).await {
+                    log::warn!(
+                        target: "ds_core::accounts",
+                        "shutdown 清理 session {} 失败: {}",
+                        s.session_id, e
+                    );
+                }
             })
             .collect();
         join_all(futures).await;

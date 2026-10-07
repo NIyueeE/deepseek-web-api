@@ -25,7 +25,7 @@ pub struct ModelStats {
 }
 
 impl ModelStats {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             prompt_tokens: AtomicU64::new(0),
             completion_tokens: AtomicU64::new(0),
@@ -42,7 +42,7 @@ pub struct KeyUsage {
 }
 
 impl KeyUsage {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             prompt_tokens: AtomicU64::new(0),
             completion_tokens: AtomicU64::new(0),
@@ -214,6 +214,7 @@ impl Stats {
         ms.completion_tokens
             .fetch_add(completion_tokens, Ordering::Relaxed);
         ms.requests.fetch_add(1, Ordering::Relaxed);
+        drop(ms);
         // 按 API Key 记录
         if let Some(key) = api_key {
             let ku = self
@@ -325,7 +326,7 @@ impl Stats {
                 request_logs: logs,
             };
             if let Err(e) = store.save_stats(&st).await {
-                log::warn!(target: "stats", "persist failed: {}", e);
+                log::warn!(target: "stats", "persist failed: {e}");
             }
         });
     }

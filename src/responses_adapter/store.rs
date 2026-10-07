@@ -126,7 +126,7 @@ impl ResponseStore {
     /// 当前保存条数（测试用）
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.map.lock().map(|m| m.len()).unwrap_or(0)
+        self.inner.map.lock().map_or(0, |m| m.len())
     }
 
     /// 缓存是否为空（测试用）
@@ -203,7 +203,7 @@ mod tests {
         {
             let mut map = store.inner.map.lock().unwrap();
             if let Some(e) = map.get_mut("expiring") {
-                e.inserted = Instant::now() - Duration::from_secs(10);
+                e.inserted = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
             }
         }
         assert!(store.get("expiring").is_none());

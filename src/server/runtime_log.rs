@@ -47,14 +47,18 @@ impl std::fmt::Debug for DualLogger {
         f.debug_struct("DualLogger")
             .field("log_path", &self.log_path)
             .field("max_level", &self.max_level)
-            .finish()
+            .field("use_color", &self.use_color)
+            // 文件句柄与日志缓冲对排查无意义，显式声明不再展开
+            .finish_non_exhaustive()
     }
 }
 
 impl DualLogger {
     fn new(log_path: &str, max_level: log::LevelFilter) -> Self {
-        if let Some(parent) = std::path::Path::new(log_path).parent() {
-            let _ = fs::create_dir_all(parent);
+        if let Some(parent) = std::path::Path::new(log_path).parent()
+            && let Err(e) = fs::create_dir_all(parent)
+        {
+            eprintln!("[runtime_log] 创建日志目录失败: {e}");
         }
 
         let file = OpenOptions::new()
@@ -85,14 +89,18 @@ impl DualLogger {
 
         for i in (1..=MAX_HISTORY_FILES).rev() {
             let old = format!("{}.{}", self.log_path, i);
-            if i == MAX_HISTORY_FILES {
-                let _ = fs::remove_file(&old);
+            let result = if i == MAX_HISTORY_FILES {
+                fs::remove_file(&old)
             } else {
-                let new = format!("{}.{}", self.log_path, i + 1);
-                let _ = fs::rename(&old, &new);
+                fs::rename(&old, format!("{}.{}", self.log_path, i + 1))
+            };
+            if let Err(e) = result {
+                eprintln!("[runtime_log] 轮转日志 {old} 失败: {e}");
             }
         }
-        let _ = fs::rename(&self.log_path, format!("{}.1", self.log_path));
+        if let Err(e) = fs::rename(&self.log_path, format!("{}.1", self.log_path)) {
+            eprintln!("[runtime_log] 轮转当前日志失败: {e}");
+        }
 
         if let Ok(new_file) = OpenOptions::new()
             .create(true)
@@ -115,6 +123,7 @@ impl DualLogger {
             .take(limit)
             .cloned()
             .collect();
+        drop(buffer);
         (total, logs)
     }
 }
@@ -132,11 +141,11 @@ fn color_for_level(level: &str) -> &'static str {
 }
 
 impl log::Log for DualLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
         metadata.level() <= self.max_level
     }
 
-    fn log(&self, record: &log::Record) {
+    fn log(&self, record: &log::Record<'_>) {
         if !self.enabled(record.metadata()) {
             return;
         }
@@ -157,13 +166,16 @@ impl log::Log for DualLogger {
                 message
             );
         } else {
-            eprintln!("[{} {:5}  {}] {}", timestamp, level, target, message);
+            eprintln!("[{timestamp} {level:5}  {target}] {message}");
         }
         // 2. 写文件
-        let file_line = format!("[{} {:5}  {}] {}\n", timestamp, level, target, message);
-        if let Ok(mut file_guard) = self.file.lock() {
-            let _ = file_guard.write_all(file_line.as_bytes());
-            let _ = file_guard.flush();
+        let file_line = format!("[{timestamp} {level:5}  {target}] {message}\n");
+        if let Ok(mut file_guard) = self.file.lock()
+            && let Err(e) = file_guard
+                .write_all(file_line.as_bytes())
+                .and_then(|()| file_guard.flush())
+        {
+            eprintln!("[runtime_log] 写入日志文件失败: {e}");
         }
 
         // 3. 写环形缓冲区（try_lock 避免阻塞 log 路径）
@@ -182,8 +194,10 @@ impl log::Log for DualLogger {
     }
 
     fn flush(&self) {
-        if let Ok(mut file_guard) = self.file.lock() {
-            let _ = file_guard.flush();
+        if let Ok(mut file_guard) = self.file.lock()
+            && let Err(e) = file_guard.flush()
+        {
+            eprintln!("[runtime_log] flush 日志文件失败: {e}");
         }
     }
 }
@@ -214,10 +228,10 @@ struct LoggerWrapper {
 }
 
 impl log::Log for LoggerWrapper {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
         self.inner.enabled(metadata)
     }
-    fn log(&self, record: &log::Record) {
+    fn log(&self, record: &log::Record<'_>) {
         self.inner.log(record);
     }
     fn flush(&self) {

@@ -188,13 +188,10 @@ fn unix_to_rfc3339(secs: u64) -> String {
         month += 1;
     }
 
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, day, hour, minute, second
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
-fn is_leap_year(y: u64) -> bool {
+const fn is_leap_year(y: u64) -> bool {
     y.is_multiple_of(4) && !y.is_multiple_of(100) || y.is_multiple_of(400)
 }
 
@@ -213,7 +210,7 @@ mod tests {
                 OpenAIModel {
                     id: "deepseek-default".to_string(),
                     object: "model",
-                    created: 1090108800,
+                    created: 1_090_108_800,
                     owned_by: "x",
                     max_input_tokens: None,
                     max_output_tokens: None,
@@ -226,7 +223,7 @@ mod tests {
                 OpenAIModel {
                     id: "deepseek-expert".to_string(),
                     object: "model",
-                    created: 1090108800,
+                    created: 1_090_108_800,
                     owned_by: "x",
                     max_input_tokens: None,
                     max_output_tokens: None,

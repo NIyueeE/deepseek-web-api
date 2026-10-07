@@ -15,7 +15,7 @@ use crate::openai_adapter::types::{ChatCompletionsResponseChunk, ChunkChoice, De
 
 use super::{next_chatcmpl_id, now_secs};
 
-fn make_usage(prompt_tokens: u32, completion_tokens: u32) -> Usage {
+const fn make_usage(prompt_tokens: u32, completion_tokens: u32) -> Usage {
     Usage {
         prompt_tokens,
         completion_tokens,
@@ -63,7 +63,7 @@ pin_project! {
 }
 
 impl<S> ConverterStream<S> {
-    pub fn new(
+    pub const fn new(
         inner: S,
         model: String,
         include_usage: bool,
@@ -142,7 +142,7 @@ where
                         finish_reason,
                         accumulated_token_usage,
                     } => {
-                        trace!(target: "adapter", ">>> conv: finish={:?}", finish_reason);
+                        trace!(target: "adapter", ">>> conv: finish={finish_reason:?}");
                         *this.finished = true;
                         let mut chunk = make_chunk(this.model, Delta::default(), Some("stop"));
                         if *this.include_usage

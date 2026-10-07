@@ -147,14 +147,14 @@ fn infer_filename_from_mime(mime: &str) -> String {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
         _ => "file",
     };
-    format!("file.{}", ext)
+    format!("file.{ext}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_req(messages: Vec<serde_json::Value>) -> ChatCompletionsRequest {
+    fn make_req(messages: &[serde_json::Value]) -> ChatCompletionsRequest {
         serde_json::from_value(serde_json::json!({
             "model": "deepseek-default",
             "messages": messages,
@@ -206,7 +206,7 @@ mod tests {
         })
     }
 
-    fn parts_msg(parts: Vec<serde_json::Value>) -> serde_json::Value {
+    fn parts_msg(parts: &[serde_json::Value]) -> serde_json::Value {
         serde_json::json!({
             "role": "user",
             "content": parts,
@@ -215,14 +215,14 @@ mod tests {
 
     #[test]
     fn no_parts_returns_empty() {
-        let result = extract(&make_req(vec![text_msg("hello")]));
+        let result = extract(&make_req(&[text_msg("hello")]));
         assert!(result.files.is_empty());
         assert!(!result.has_http_urls);
     }
 
     #[test]
     fn skip_text_part() {
-        let result = extract(&make_req(vec![parts_msg(vec![text_part("hello")])]));
+        let result = extract(&make_req(&[parts_msg(&[text_part("hello")])]));
         assert!(result.files.is_empty());
         assert!(!result.has_http_urls);
     }
@@ -230,8 +230,8 @@ mod tests {
     #[test]
     fn extract_file_with_data_url() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"hello world");
-        let data_url = format!("data:text/plain;base64,{}", b64);
-        let result = extract(&make_req(vec![parts_msg(vec![file_part(
+        let data_url = format!("data:text/plain;base64,{b64}");
+        let result = extract(&make_req(&[parts_msg(&[file_part(
             &data_url,
             Some("hello.txt"),
         )])]));
@@ -245,8 +245,8 @@ mod tests {
     #[test]
     fn extract_file_without_filename() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"pdf content");
-        let data_url = format!("data:application/pdf;base64,{}", b64);
-        let result = extract(&make_req(vec![parts_msg(vec![file_part(&data_url, None)])]));
+        let data_url = format!("data:application/pdf;base64,{b64}");
+        let result = extract(&make_req(&[parts_msg(&[file_part(&data_url, None)])]));
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].filename, "file.pdf");
         assert_eq!(result.files[0].content_type, "application/pdf");
@@ -255,8 +255,8 @@ mod tests {
     #[test]
     fn extract_image_with_data_url() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"image data");
-        let data_url = format!("data:image/png;base64,{}", b64);
-        let result = extract(&make_req(vec![parts_msg(vec![image_part(&data_url)])]));
+        let data_url = format!("data:image/png;base64,{b64}");
+        let result = extract(&make_req(&[parts_msg(&[image_part(&data_url)])]));
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].filename, "image.png");
         assert_eq!(result.files[0].content_type, "image/png");
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn http_image_triggers_search() {
-        let result = extract(&make_req(vec![parts_msg(vec![image_part(
+        let result = extract(&make_req(&[parts_msg(&[image_part(
             "https://example.com/img.jpg",
         )])]));
         assert!(result.files.is_empty());
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn skip_file_without_data_url() {
-        let result = extract(&make_req(vec![parts_msg(vec![file_ref_part(
+        let result = extract(&make_req(&[parts_msg(&[file_ref_part(
             "file-abc", "ref.pdf",
         )])]));
         assert!(result.files.is_empty());
@@ -286,10 +286,10 @@ mod tests {
     fn extract_multiple_files_from_single_message() {
         let b64_1 = base64::engine::general_purpose::STANDARD.encode(b"file1");
         let b64_2 = base64::engine::general_purpose::STANDARD.encode(b"file2");
-        let result = extract(&make_req(vec![parts_msg(vec![
-            file_part(&format!("data:text/plain;base64,{}", b64_1), Some("a.txt")),
+        let result = extract(&make_req(&[parts_msg(&[
+            file_part(&format!("data:text/plain;base64,{b64_1}"), Some("a.txt")),
             file_part(
-                &format!("data:application/pdf;base64,{}", b64_2),
+                &format!("data:application/pdf;base64,{b64_2}"),
                 Some("b.pdf"),
             ),
         ])]));
@@ -301,11 +301,11 @@ mod tests {
     #[test]
     fn extract_files_from_multiple_messages() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"data");
-        let result = extract(&make_req(vec![
-            parts_msg(vec![image_part(&format!("data:image/webp;base64,{}", b64))]),
+        let result = extract(&make_req(&[
+            parts_msg(&[image_part(&format!("data:image/webp;base64,{b64}"))]),
             text_msg("response"),
-            parts_msg(vec![file_part(
-                &format!("data:application/json;base64,{}", b64),
+            parts_msg(&[file_part(
+                &format!("data:application/json;base64,{b64}"),
                 Some("data.json"),
             )]),
         ]));
@@ -317,9 +317,9 @@ mod tests {
     #[test]
     fn http_url_and_data_url_mixed() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"img");
-        let result = extract(&make_req(vec![parts_msg(vec![
+        let result = extract(&make_req(&[parts_msg(&[
             image_part("https://example.com/photo.jpg"),
-            image_part(&format!("data:image/png;base64,{}", b64)),
+            image_part(&format!("data:image/png;base64,{b64}")),
         ])]));
         assert_eq!(result.files.len(), 1);
         assert!(result.has_http_urls);

@@ -10,8 +10,9 @@ use std::time::SystemTime;
 
 use dashmap::DashMap;
 use futures::TryStreamExt;
+use futures::future::join_all;
 use log::{debug, error, info, warn};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 use super::client::{ClientError, CompletionPayload, DsClient, LoginPayload};
 use super::pow::{PowError, PowSolver};
@@ -28,7 +29,7 @@ pub enum AccountState {
 }
 
 impl AccountState {
-    fn from_u8(v: u8) -> Self {
+    const fn from_u8(v: u8) -> Self {
         match v {
             0 => Self::Idle,
             1 => Self::Busy,
@@ -37,7 +38,7 @@ impl AccountState {
         }
     }
 
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Idle => "idle",
             Self::Busy => "busy",
@@ -84,7 +85,7 @@ impl AccountStatus {
             let ts = account.window.timestamps.lock().unwrap();
             ts.front().copied().unwrap_or(now)
         };
-        let window_remaining = (window_started + WINDOW_SECS as i64 - now_secs()).max(0);
+        let window_remaining = (window_started + WINDOW_SECS - now_secs()).max(0);
         Self {
             email: account.email.clone(),
             mobile: account.mobile.clone(),
@@ -128,13 +129,37 @@ pub struct Account {
 const MAX_ERROR_COUNT: u8 = 3;
 
 /// 配额窗口长度：1 小时
-const WINDOW_SECS: u64 = 3600;
+const WINDOW_SECS: i64 = 3600;
 
 fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    unix_timestamp_secs().unwrap_or(i64::MAX)
+}
+
+/// 当前 Unix 时间戳（毫秒），用于账号释放冷却判断
+fn now_ms() -> i64 {
+    unix_timestamp_millis().unwrap_or(i64::MAX)
+}
+
+/// Unix 秒级时间戳；系统时钟异常（早于 EPOCH / 溢出 i64）时返回 None
+fn unix_timestamp_secs() -> Option<i64> {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
+    .ok()
+}
+
+/// Unix 毫秒级时间戳；系统时钟异常（早于 EPOCH / 溢出 i64）时返回 None
+fn unix_timestamp_millis() -> Option<i64> {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_millis(),
+    )
+    .ok()
 }
 
 /// 严格滑动窗口限流器
@@ -156,7 +181,7 @@ struct SlidingWindowRateLimiter {
 }
 
 impl SlidingWindowRateLimiter {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             timestamps: Mutex::new(VecDeque::new()),
             total_count: AtomicU64::new(0),
@@ -200,7 +225,7 @@ impl SlidingWindowRateLimiter {
     fn record(&self) -> u64 {
         let now = now_secs();
         let mut ts = self.timestamps.lock().unwrap();
-        let cutoff = now - WINDOW_SECS as i64;
+        let cutoff = now - WINDOW_SECS;
 
         // 清理过期时间戳
         while ts.front().is_some_and(|&t| t < cutoff) {
@@ -221,7 +246,7 @@ impl SlidingWindowRateLimiter {
     fn used(&self) -> u64 {
         let now = now_secs();
         let mut ts = self.timestamps.lock().unwrap();
-        let cutoff = now - WINDOW_SECS as i64;
+        let cutoff = now - WINDOW_SECS;
 
         while ts.front().is_some_and(|&t| t < cutoff) {
             ts.pop_front();
@@ -334,11 +359,9 @@ impl Drop for AccountGuard {
                 Ordering::Relaxed,
             )
             .ok();
-        let d = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
-        let now_ms = (d.as_secs() * 1000 + u64::from(d.subsec_millis())) as i64;
-        self.account.last_released.store(now_ms, Ordering::Relaxed);
+        self.account
+            .last_released
+            .store(now_ms(), Ordering::Relaxed);
     }
 }
 
@@ -404,10 +427,6 @@ impl AccountPool {
 
         warn_on_shared_device_ids(&creds);
 
-        use futures::future::join_all;
-        use std::sync::Arc;
-        use tokio::sync::Semaphore;
-
         // 限制并发初始化数，避免对 DeepSeek 端和本地连接池造成压力
         let semaphore = Arc::new(Semaphore::new(13));
         let futures: Vec<_> = creds
@@ -425,11 +444,11 @@ impl AccountPool {
                     };
                     let account = match init_account(&creds, &client, &solver).await {
                         Ok(account) => {
-                            info!(target: "ds_core::accounts", "Account {} initialized successfully", display_id);
+                            info!(target: "ds_core::accounts", "Account {display_id} initialized successfully");
                             account
                         }
                         Err(e) => {
-                            warn!(target: "ds_core::accounts", "Account {} initialization failed: {}", display_id, e);
+                            warn!(target: "ds_core::accounts", "Account {display_id} initialization failed: {e}");
                             // 即使初始化失败也加入池，标记为 Invalid 以便前台展示
                             Account::new_invalid(creds.clone(), self.hourly_quota, &client)
                         }
@@ -479,12 +498,12 @@ impl AccountPool {
         let account = init_account(creds, client, solver).await?;
         let _id = account.display_id().to_string();
         self.accounts.insert(display_id.clone(), Arc::new(account));
-        info!(target: "ds_core::accounts", "Account {} added dynamically", display_id);
+        info!(target: "ds_core::accounts", "Account {display_id} added dynamically");
         Ok(display_id)
     }
 
     /// 动态移除账号（仅空闲账号可移除）
-    pub async fn remove_account(&self, email_or_mobile: &str) -> Result<String, PoolError> {
+    pub fn remove_account(&self, email_or_mobile: &str) -> Result<String, PoolError> {
         let account = self
             .accounts
             .get(email_or_mobile)
@@ -501,7 +520,7 @@ impl AccountPool {
             .remove(email_or_mobile)
             .ok_or_else(|| PoolError::NotFound(email_or_mobile.to_string()))?;
         let id = removed.display_id().to_string();
-        info!(target: "ds_core::accounts", "Account {} removed", id);
+        info!(target: "ds_core::accounts", "Account {id} removed");
         Ok(id)
     }
 
@@ -528,15 +547,12 @@ impl AccountPool {
             return None;
         }
 
-        let d = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
-        let now_ms = (d.as_secs() * 1000 + u64::from(d.subsec_millis())) as i64;
+        let now_ms = now_ms();
 
         let mut best: Option<Arc<Account>> = None;
         let mut best_idle = i64::MIN;
 
-        for entry in self.accounts.iter() {
+        for entry in &self.accounts {
             let account = entry.value();
             if !account.is_available() {
                 continue;
@@ -595,9 +611,6 @@ impl AccountPool {
             .collect()
     }
 
-    /// 优雅关闭（新流程无持久 session，无需清理）
-    pub async fn shutdown(&self, _client: &DsClient) {}
-
     /// 存储 client 和 solver 供恢复任务使用
     pub async fn set_client_solver(&self, client: DsClient, solver: PowSolver) {
         *self.client.write().await = Some(client);
@@ -631,11 +644,12 @@ impl AccountPool {
             return Err("client/solver 未初始化".to_string());
         };
 
+        // 克隆 Arc 后再重登：避免跨 await 持有 DashMap 分片读锁
         let account = self
             .accounts
             .get(email_or_mobile)
-            .ok_or_else(|| format!("账号 {} 不存在", email_or_mobile))?;
-        let account = account.value();
+            .map(|a| a.value().clone())
+            .ok_or_else(|| format!("账号 {email_or_mobile} 不存在"))?;
 
         // 只允许 Error/Invalid 状态的账号重登
         let state = account.state();
@@ -646,7 +660,7 @@ impl AccountPool {
             ));
         }
 
-        Self::re_login_account(account, &client, &solver).await;
+        Self::re_login_account(&account, &client, &solver).await;
 
         // 检查重登后状态
         let new_state = account.state();
@@ -663,7 +677,7 @@ impl AccountPool {
     ///
     /// 封禁（10）/ 禁言（5）/ 设备校验失败（11）/ 凭据错误（2）以及本地校验失败，
     /// 反复重试只会继续打上游 —— 文档里明确「禁言后继续重试不会加速解禁，反而可能延长」。
-    fn is_terminal_login_error(e: &PoolError) -> bool {
+    const fn is_terminal_login_error(e: &PoolError) -> bool {
         match e {
             PoolError::Validation(_) => true,
             PoolError::Client(ClientError::Business { code, .. }) => {
@@ -683,7 +697,7 @@ impl AccountPool {
                     .state
                     .store(AccountState::Idle as u8, Ordering::Relaxed);
                 account.error_count.store(0, Ordering::Relaxed);
-                info!(target: "ds_core::accounts", "Account {} re-login successful", display_id);
+                info!(target: "ds_core::accounts", "Account {display_id} re-login successful");
             }
             Err(e) if Self::is_terminal_login_error(&e) => {
                 // 终止性错误：立即置 Invalid，停止重试（避免反复登录已被封禁/禁言的账号）
@@ -692,8 +706,7 @@ impl AccountPool {
                     .store(AccountState::Invalid as u8, Ordering::Relaxed);
                 error!(
                     target: "ds_core::accounts",
-                    "Account {} 登录被终止性拒绝，已标记 Invalid 并停止重试: {}",
-                    display_id, e
+                    "Account {display_id} 登录被终止性拒绝，已标记 Invalid 并停止重试: {e}"
                 );
             }
             Err(e) => {
@@ -702,9 +715,9 @@ impl AccountPool {
                     account
                         .state
                         .store(AccountState::Invalid as u8, Ordering::Relaxed);
-                    error!(target: "ds_core::accounts", "Account {} re-login failed {} times, marked as Invalid: {}", display_id, count, e);
+                    error!(target: "ds_core::accounts", "Account {display_id} re-login failed {count} times, marked as Invalid: {e}");
                 } else {
-                    warn!(target: "ds_core::accounts", "Account {} re-login failed (attempt {}): {}", display_id, count, e);
+                    warn!(target: "ds_core::accounts", "Account {display_id} re-login failed (attempt {count}): {e}");
                 }
             }
         }
@@ -715,7 +728,7 @@ impl AccountPool {
         let pool = Arc::clone(self);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                tokio::time::sleep(tokio::time::Duration::from_mins(1)).await;
 
                 let client_opt = pool.client.read().await.clone();
                 let solver_opt = pool.solver.read().await.clone();
@@ -723,7 +736,7 @@ impl AccountPool {
                     continue;
                 };
 
-                for entry in pool.accounts.iter() {
+                for entry in &pool.accounts {
                     let account = entry.value();
                     if account.state() == AccountState::Error {
                         Self::re_login_account(account, &client, &solver).await;
@@ -905,10 +918,20 @@ async fn try_init_account(
     let session_id = client.create_session(&token).await?;
     if let Err(e) = health_check(&token, &session_id, client, solver, "default", display_id).await {
         // 即使健康检查失败也要清理 session
-        let _ = client.delete_session(&token, &session_id).await;
+        if let Err(cleanup_err) = client.delete_session(&token, &session_id).await {
+            log::warn!(
+                target: "ds_core::accounts",
+                "健康检查失败后清理 session {session_id} 也失败: {cleanup_err}"
+            );
+        }
         return Err(e);
     }
-    let _ = client.delete_session(&token, &session_id).await;
+    if let Err(e) = client.delete_session(&token, &session_id).await {
+        log::warn!(
+            target: "ds_core::accounts",
+            "健康检查后清理 session {session_id} 失败: {e}"
+        );
+    }
 
     Ok(Account {
         token: std::sync::RwLock::new(token.into()),
@@ -1114,7 +1137,7 @@ mod tests {
         ts.clear();
         // 插入 1 小时前的时间戳
         for _ in 0..5 {
-            ts.push_back(now - WINDOW_SECS as i64 - 100);
+            ts.push_back(now - WINDOW_SECS - 100);
         }
         drop(ts);
         assert_eq!(w.used(), 0, "窗口过期后用量应视作 0");

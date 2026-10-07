@@ -79,7 +79,7 @@ impl StoreManager {
                             s
                         }
                         Err(e) => {
-                            warn!(target: "store", "failed to parse stats.json: {}, using zeros", e);
+                            warn!(target: "store", "failed to parse stats.json: {e}, using zeros");
                             StatsStore::default()
                         }
                     }
@@ -89,7 +89,7 @@ impl StoreManager {
                     StatsStore::default()
                 }
                 Err(e) => {
-                    warn!(target: "store", "failed to read stats.json: {}, using zeros", e);
+                    warn!(target: "store", "failed to read stats.json: {e}, using zeros");
                     StatsStore::default()
                 }
             }
@@ -129,8 +129,7 @@ impl StoreManager {
 
     /// 获取最近一次 JWT 签发时间（用于吊销旧 token）
     pub async fn jwt_issued_at(&self) -> Option<u64> {
-        let guard = self.config.read().await;
-        let iat = guard.admin.jwt_issued_at;
+        let iat = self.config.read().await.admin.jwt_issued_at;
         (iat > 0).then_some(iat)
     }
 
@@ -138,7 +137,10 @@ impl StoreManager {
     pub async fn set_jwt_issued_at(&self, iat: u64) {
         let mut guard = self.config.write().await;
         guard.admin.jwt_issued_at = iat;
-        let _ = guard.save(&self.config_path);
+        if let Err(e) = guard.save(&self.config_path) {
+            log::warn!(target: "http::server", "持久化 jwt_issued_at 失败: {e}");
+        }
+        drop(guard);
     }
 
     /// 保存 admin 配置（密码哈希、JWT 密钥等）
@@ -152,8 +154,9 @@ impl StoreManager {
         guard.admin.password_hash = password_hash;
         guard.admin.jwt_secret = jwt_secret;
         guard.admin.jwt_issued_at = jwt_issued_at;
-        guard.save(&self.config_path)?;
-        Ok(())
+        let result = guard.save(&self.config_path);
+        drop(guard);
+        Ok(result?)
     }
 
     /// 查找 API Key 是否有效
@@ -209,6 +212,12 @@ pub fn hash_password(plain: &str) -> String {
 // hex 编码辅助（避免额外依赖）
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        use std::fmt::Write as _;
+
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            let _ = write!(out, "{b:02x}");
+        }
+        out
     }
 }

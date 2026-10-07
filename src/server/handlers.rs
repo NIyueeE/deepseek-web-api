@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use pin_project_lite::pin_project;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -160,7 +160,7 @@ struct RequestRecord<'a> {
 
 /// Record a completed request — logs tokens and appends RequestLog via Stats
 impl AppState {
-    fn record_request(&self, rec: RequestRecord) {
+    fn record_request(&self, rec: &RequestRecord<'_>) {
         self.stats.record_tokens_for_model_and_key(
             rec.model,
             rec.api_key.as_deref(),
@@ -210,12 +210,11 @@ pub(crate) async fn chat_completions(
     match &result {
         Ok(_) => timer.mark_success(),
         Err(_) => timer.mark_failure(),
-    };
+    }
     let result = result?;
     match result.data {
         ChatOutput::Stream(stream) => {
             let prompt_tokens = u64::from(result.prompt_tokens);
-            use futures::StreamExt;
             let completion_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let ct_ref = completion_tokens.clone();
             let elapsed = timer_start.elapsed();
@@ -248,7 +247,7 @@ pub(crate) async fn chat_completions(
                     success: true,
                 },
             };
-            log::debug!(target: "http::response", "req={} 200 SSE stream started", request_id);
+            log::debug!(target: "http::response", "req={request_id} 200 SSE stream started");
             Ok(SseBody::new(guarded)
                 .with_header(X_DS_ACCOUNT, &mask_account_id(&result.account_id))
                 .into_response())
@@ -258,11 +257,10 @@ pub(crate) async fn chat_completions(
             let ct = json
                 .usage
                 .as_ref()
-                .map(|u| u64::from(u.completion_tokens))
-                .unwrap_or(0);
+                .map_or(0, |u| u64::from(u.completion_tokens));
             let elapsed = timer_start.elapsed();
             let latency_ms = elapsed.as_secs() * 1000 + u64::from(elapsed.subsec_millis());
-            state.record_request(RequestRecord {
+            state.record_request(&RequestRecord {
                 request_id: &request_id,
                 model: &model,
                 api_key: &api_key,
@@ -292,7 +290,7 @@ pub(crate) async fn responses_get(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Response, ServerError> {
-    log::debug!(target: "http::request", "GET /v1/responses/{}", id);
+    log::debug!(target: "http::request", "GET /v1/responses/{id}");
     state.responses_adapter.get_response(&id).map_or_else(
         || Err(ServerError::NotFound(format!("response '{id}'"))),
         |snapshot| {
@@ -332,7 +330,7 @@ pub(crate) async fn responses(
     match &result {
         Ok(_) => timer.mark_success(),
         Err(_) => timer.mark_failure(),
-    };
+    }
     let result = result?;
 
     match result.data {
@@ -340,7 +338,6 @@ pub(crate) async fn responses(
             let prompt_tokens = u64::from(result.prompt_tokens);
             let completion_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let ct_ref = completion_tokens.clone();
-            use futures::StreamExt;
             // Responses 的 usage 落在 `response.completed` 事件里，从 SSE 文本中提取
             let sse = stream.inspect(move |chunk| {
                 if let Ok(bytes) = chunk
@@ -366,7 +363,7 @@ pub(crate) async fn responses(
                     success: true,
                 },
             };
-            log::debug!(target: "http::response", "req={} 200 Responses SSE started", request_id);
+            log::debug!(target: "http::response", "req={request_id} 200 Responses SSE started");
             Ok(SseBody::new(guarded)
                 .with_header(X_DS_ACCOUNT, &mask_account_id(&result.account_id))
                 .with_header("openai-processing-ms", &latency_ms.to_string())
@@ -377,7 +374,7 @@ pub(crate) async fn responses(
             let ct = u64::from(json.usage.as_ref().map_or(0, |u| u.output_tokens));
             let elapsed = timer_start.elapsed();
             let latency_ms = elapsed.as_secs() * 1000 + u64::from(elapsed.subsec_millis());
-            state.record_request(RequestRecord {
+            state.record_request(&RequestRecord {
                 request_id: &request_id,
                 model: &model,
                 api_key: &api_key,
@@ -432,7 +429,7 @@ pub(crate) async fn get_model(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Response, ServerError> {
-    log::debug!(target: "http::request", "GET /v1/models/{}", id);
+    log::debug!(target: "http::request", "GET /v1/models/{id}");
 
     state.adapter.get_model(&id).await.map_or_else(
         || Err(ServerError::NotFound(id)),
@@ -472,7 +469,7 @@ pub(crate) async fn anthropic_messages(
     match &result {
         Ok(_) => timer.mark_success(),
         Err(_) => timer.mark_failure(),
-    };
+    }
     let result = result?;
     match result.data {
         AnthropicOutput::Stream(stream) => {
@@ -480,7 +477,6 @@ pub(crate) async fn anthropic_messages(
             let stats = state.stats.clone();
             let completion_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let ct_ref = completion_tokens.clone();
-            use futures::StreamExt;
             let sse = stream
                 .inspect(move |chunk| {
                     if let Ok(c) = chunk
@@ -515,7 +511,7 @@ pub(crate) async fn anthropic_messages(
                     success: true,
                 },
             };
-            log::debug!(target: "http::response", "req={} 200 SSE stream started", request_id);
+            log::debug!(target: "http::response", "req={request_id} 200 SSE stream started");
             Ok(SseBody::new(guarded)
                 .with_header(X_DS_ACCOUNT, &mask_account_id(&result.account_id))
                 .with_header(ANTHROPIC_REQUEST_ID, &request_id)
@@ -526,7 +522,7 @@ pub(crate) async fn anthropic_messages(
             let ct = u64::from(json.usage.output_tokens);
             let elapsed = timer_start.elapsed();
             let latency_ms = elapsed.as_secs() * 1000 + u64::from(elapsed.subsec_millis());
-            state.record_request(RequestRecord {
+            state.record_request(&RequestRecord {
                 request_id: &request_id,
                 model: &model,
                 api_key: &api_key,
@@ -567,14 +563,13 @@ pub(crate) async fn anthropic_get_model(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Response, ServerError> {
-    log::debug!(target: "http::request", "GET /anthropic/v1/models/{}", id);
+    log::debug!(target: "http::request", "GET /anthropic/v1/models/{id}");
 
     state.anthropic_compat.get_model(&id).await.map_or_else(
         // Anthropic 客户端只识别 Anthropic 形态的错误信封
         || {
             Ok(super::error::anthropic_not_found_error(&format!(
-                "model '{}' not found",
-                id
+                "model '{id}' not found"
             )))
         },
         |model| {

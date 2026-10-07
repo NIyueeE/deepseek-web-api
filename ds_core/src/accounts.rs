@@ -83,9 +83,7 @@ impl Accounts {
                 }
                 PoolError::Client(e) => CoreError::ProviderError(e.to_string()),
                 PoolError::Pow(e) => CoreError::ProofOfWorkFailed(e),
-                PoolError::Validation(msg) => {
-                    CoreError::ProviderError(format!("配置错误: {}", msg))
-                }
+                PoolError::Validation(msg) => CoreError::ProviderError(format!("配置错误: {msg}")),
                 other => CoreError::ProviderError(other.to_string()),
             })?;
 
@@ -236,8 +234,8 @@ impl Accounts {
             .client()
             .create_pow_challenge(&account.token(), target_path)
             .await?;
-        let solver = self.solver.read().await;
-        let result = solver.solve(&challenge_data)?;
+        // 仅在一次求解期间持有读锁，避免阻塞 reload_config 的写锁
+        let result = self.solver.read().await.solve(&challenge_data)?;
         Ok(result.to_header())
     }
 
@@ -255,17 +253,12 @@ impl Accounts {
         self.pool.add_account(creds, &client, &solver).await
     }
 
-    pub async fn remove_account(&self, email_or_mobile: &str) -> Result<String, PoolError> {
-        self.pool.remove_account(email_or_mobile).await
+    pub fn remove_account(&self, email_or_mobile: &str) -> Result<String, PoolError> {
+        self.pool.remove_account(email_or_mobile)
     }
 
     pub async fn re_login_single(&self, email_or_mobile: &str) -> Result<(), String> {
         self.pool.re_login_single(email_or_mobile).await
-    }
-
-    pub async fn shutdown(&self) {
-        let client = self.client.read().await;
-        self.pool.shutdown(&client).await;
     }
 
     pub async fn reload_config(&self, config: &DsCoreConfig) -> Result<(), CoreError> {

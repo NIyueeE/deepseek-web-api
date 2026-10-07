@@ -208,7 +208,7 @@ pub(crate) async fn admin_setup(
 ) -> Response {
     let req: SetupRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("请求格式错误: {}", e)),
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("请求格式错误: {e}")),
     };
 
     match super::auth::setup_admin(&state.store, &state.login_limiter, &req.password).await {
@@ -234,7 +234,7 @@ pub(crate) async fn admin_login(
 ) -> Response {
     let req: LoginRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("请求格式错误: {}", e)),
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("请求格式错误: {e}")),
     };
 
     match super::auth::login_admin(&state.store, &state.login_limiter, &req.password).await {
@@ -353,8 +353,10 @@ pub(crate) async fn admin_models(State(state): State<AppState>) -> Response {
 
 /// GET /admin/api/config
 pub(crate) async fn admin_config(State(state): State<AppState>) -> Response {
-    let config = state.config.read().await;
-    let config_view = mask_config(&config);
+    let config_view = {
+        let config = state.config.read().await;
+        mask_config(&config)
+    };
     json_response(&config_view)
 }
 
@@ -365,7 +367,7 @@ pub(crate) async fn admin_put_config(
 ) -> Response {
     let mut new_config: Config = match serde_json::from_slice(&body) {
         Ok(c) => c,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("JSON 解析失败: {}", e)),
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("JSON 解析失败: {e}")),
     };
 
     // Validate
@@ -429,6 +431,7 @@ pub(crate) async fn admin_put_config(
             new_config.admin.jwt_secret = super::store::generate_hex_secret();
             new_config.admin.jwt_issued_at += 1;
         }
+        drop(current);
     }
 
     // Persist
@@ -436,10 +439,7 @@ pub(crate) async fn admin_put_config(
         let mut guard = state.config.write().await;
         *guard = new_config.clone();
         if let Err(e) = guard.save(&state.config_path) {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("保存失败: {}", e),
-            );
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("保存失败: {e}"));
         }
     }
 
@@ -457,7 +457,7 @@ pub struct LogsQuery {
     pub limit: usize,
 }
 
-fn default_limit() -> usize {
+const fn default_limit() -> usize {
     50
 }
 
@@ -478,7 +478,7 @@ pub struct RuntimeLogsQuery {
     pub limit: usize,
 }
 
-fn default_runtime_limit() -> usize {
+const fn default_runtime_limit() -> usize {
     100
 }
 

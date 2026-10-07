@@ -47,7 +47,7 @@ impl TagConfig {
 }
 
 /// 标签字符归一化：`｜`(U+FF5C) → `|`，`▁`(U+2581) → `_`
-fn norm_tag_char(c: char) -> char {
+const fn norm_tag_char(c: char) -> char {
     match c {
         '\u{FF5C}' => '|',
         '\u{2581}' => '_',
@@ -56,7 +56,7 @@ fn norm_tag_char(c: char) -> char {
 }
 
 /// 标签字符等价判断
-fn eq_tag_char(a: char, b: char) -> bool {
+const fn eq_tag_char(a: char, b: char) -> bool {
     a == b || norm_tag_char(a) == norm_tag_char(b)
 }
 
@@ -196,10 +196,10 @@ fn is_start_tag(tag: &str, cfg: &TagConfig) -> bool {
 
 fn next_call_id() -> String {
     let n = CALL_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("call_{:016x}", n)
+    format!("call_{n:016x}")
 }
 
-fn floor_char_boundary(s: &str, max: usize) -> usize {
+const fn floor_char_boundary(s: &str, max: usize) -> usize {
     if max >= s.len() {
         return s.len();
     }
@@ -250,8 +250,9 @@ fn repair_unquoted_keys(s: &str) -> String {
     let len = chars.len();
     let mut i = 0;
     while i < len {
+        // 两条分支都要原样输出当前字符，先统一输出再判断是否是键起始位置
+        out.push(chars[i]);
         if (chars[i] == '{' || chars[i] == ',') && i + 1 < len {
-            out.push(chars[i]);
             i += 1;
             while i < len && chars[i].is_whitespace() {
                 out.push(chars[i]);
@@ -272,7 +273,6 @@ fn repair_unquoted_keys(s: &str) -> String {
                 }
             }
         } else {
-            out.push(chars[i]);
             i += 1;
         }
     }
@@ -313,7 +313,7 @@ pub fn parse_tool_calls_with(xml: &str, cfg: &TagConfig) -> Option<(Vec<ToolCall
 
     let arr = match inner.find('[') {
         Some(arr_start) => {
-            let arr_end = inner.rfind(']').map(|p| p + 1).unwrap_or(inner.len());
+            let arr_end = inner.rfind(']').map_or(inner.len(), |p| p + 1);
             let json_str = &inner[arr_start..arr_end];
             if json_str.trim() == "[]" {
                 return None;
@@ -324,7 +324,7 @@ pub fn parse_tool_calls_with(xml: &str, cfg: &TagConfig) -> Option<(Vec<ToolCall
                 let repaired = repair_json(json_str).unwrap_or_default();
                 let obj_str = repaired.trim_start_matches('[');
                 let obj_start = obj_str.find('{')?;
-                let obj_end = obj_str.rfind('}').map(|p| p + 1).unwrap_or(obj_str.len());
+                let obj_end = obj_str.rfind('}').map_or(obj_str.len(), |p| p + 1);
                 serde_json::from_str(&obj_str[obj_start..obj_end])
                     .ok()
                     .filter(|v: &serde_json::Value| v.is_object())
@@ -333,7 +333,7 @@ pub fn parse_tool_calls_with(xml: &str, cfg: &TagConfig) -> Option<(Vec<ToolCall
         }
         None => {
             if let Some(obj_start) = inner.find('{') {
-                let obj_end = inner.rfind('}').map(|p| p + 1).unwrap_or(inner.len());
+                let obj_end = inner.rfind('}').map_or(inner.len(), |p| p + 1);
                 let json_str = &inner[obj_start..obj_end];
                 let obj = serde_json::from_str(json_str)
                     .ok()
@@ -354,9 +354,9 @@ pub fn parse_tool_calls_with(xml: &str, cfg: &TagConfig) -> Option<(Vec<ToolCall
     let mut calls = Vec::new();
     for item in arr {
         let name = item.get("name")?.as_str()?.to_string();
-        let arguments = item
-            .get("arguments")
-            .map(|v| {
+        let arguments = item.get("arguments").map_or_else(
+            || "{}".into(),
+            |v| {
                 v.as_str().map_or_else(
                     || serde_json::to_string(v).unwrap_or_else(|_| "{}".into()),
                     |s| {
@@ -366,14 +366,14 @@ pub fn parse_tool_calls_with(xml: &str, cfg: &TagConfig) -> Option<(Vec<ToolCall
                             .unwrap_or_else(|| s.to_string())
                     },
                 )
-            })
-            .unwrap_or_else(|| "{}".into());
+            },
+        );
         calls.push(ToolCall {
             id: next_call_id(),
             ty: "function".to_string(),
             function: Some(FunctionCall { name, arguments }),
             custom: None,
-            index: calls.len() as u32,
+            index: u32::try_from(calls.len()).unwrap_or(u32::MAX),
         });
     }
     if calls.is_empty() {
@@ -426,7 +426,7 @@ fn parse_invoke_calls(inner: &str, prefix: &str, suffix: &str) -> Option<(Vec<To
                 arguments,
             }),
             custom: None,
-            index: calls.len() as u32,
+            index: u32::try_from(calls.len()).unwrap_or(u32::MAX),
         });
         pos = abs_start + close_pos + close_tag.len();
     }
@@ -574,18 +574,13 @@ where
                                         if is_start_tag(matched_end, this.tag_config)
                                             && inner.trim().is_empty()
                                         {
-                                            if before.is_empty() {
-                                                *this.state = ToolParseState::CollectingXml {
-                                                    buf: rest,
-                                                    start_tag,
-                                                };
-                                            } else {
+                                            if !before.is_empty() {
                                                 choice.delta.content = Some(before);
-                                                *this.state = ToolParseState::CollectingXml {
-                                                    buf: rest,
-                                                    start_tag,
-                                                };
                                             }
+                                            *this.state = ToolParseState::CollectingXml {
+                                                buf: rest,
+                                                start_tag,
+                                            };
                                             continue;
                                         }
                                         let end_abs = end_pos + matched_end.len();
@@ -615,7 +610,6 @@ where
                                             }
                                             choice.delta.content = Some(before);
                                             *this.repair_pending = Some(collected);
-                                            return Poll::Ready(Some(Ok(chunk)));
                                         }
                                         return Poll::Ready(Some(Ok(chunk)));
                                     }
@@ -654,7 +648,7 @@ where
                                     choice.delta.content = Some(flushed);
                                     return Poll::Ready(Some(Ok(chunk)));
                                 }
-                                let start_end = buf.find('>').map(|p| p + 1).unwrap_or(0);
+                                let start_end = buf.find('>').map_or(0, |p| p + 1);
                                 if let Some((end_pos, en_tag)) = find_end_tag_with(
                                     buf,
                                     start_end,
@@ -868,21 +862,15 @@ mod tests {
 
     #[test]
     fn repair_backslashes_passes_valid_escapes() {
-        assert_eq!(
-            repair_invalid_backslashes(r#"hello\nworld"#),
-            r#"hello\nworld"#
-        );
+        assert_eq!(repair_invalid_backslashes(r"hello\nworld"), r"hello\nworld");
     }
     #[test]
     fn repair_backslashes_fixes_invalid_escapes() {
-        assert_eq!(repair_invalid_backslashes(r#"C:\Users\name"#).len(), 14);
+        assert_eq!(repair_invalid_backslashes(r"C:\Users\name").len(), 14);
     }
     #[test]
     fn repair_backslashes_keeps_valid_n() {
-        assert_eq!(
-            repair_invalid_backslashes(r#"line1\nline2"#),
-            r#"line1\nline2"#
-        );
+        assert_eq!(repair_invalid_backslashes(r"line1\nline2"), r"line1\nline2");
     }
     #[test]
     fn repair_unquoted_keys_basic() {

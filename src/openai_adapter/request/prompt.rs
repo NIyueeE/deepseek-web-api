@@ -34,11 +34,11 @@ fn merge_messages(messages: &[Message]) -> Vec<Message> {
                         (last_c, new_c) => {
                             let new_text = format_content(new_c);
                             let last_text = format_content(last_c);
-                            *last_c = MessageContent::Text(format!("{}\n{}", last_text, new_text));
+                            *last_c = MessageContent::Text(format!("{last_text}\n{new_text}"));
                         }
                     },
                     None => {
-                        last.content = msg.content.clone();
+                        last.content.clone_from(&msg.content);
                     }
                 }
             }
@@ -46,7 +46,7 @@ fn merge_messages(messages: &[Message]) -> Vec<Message> {
             if let Some(ref calls) = msg.tool_calls {
                 match &mut last.tool_calls {
                     Some(last_calls) => last_calls.extend(calls.clone()),
-                    None => last.tool_calls = msg.tool_calls.clone(),
+                    None => last.tool_calls.clone_from(&msg.tool_calls),
                 }
             }
             // 覆盖字段：取最后一条的值
@@ -88,8 +88,7 @@ fn format_response_text(rf: &crate::openai_adapter::types::ResponseFormat) -> St
                 "以 JSON 的形式输出。".into()
             } else {
                 format!(
-                    "以 JSON 的形式输出，输出的 JSON 需遵守以下的格式：\n\n~~~json\n{}\n~~~",
-                    schema_text
+                    "以 JSON 的形式输出，输出的 JSON 需遵守以下的格式：\n\n~~~json\n{schema_text}\n~~~"
                 )
             }
         }
@@ -103,6 +102,17 @@ fn format_response_text(rf: &crate::openai_adapter::types::ResponseFormat) -> St
 /// 顺序：`<｜System｜>`（工具定义 / 格式规范 / 调用指令 / `response_format` 约束，
 /// 合并为普通 System 内容**注入一次**）→ 历史 user/tool/assistant 轮次 →
 /// 末尾补 `<｜Assistant｜>` 锚点（最后一条已是 assistant 则保持原样）。
+/// 把连续的 tool 输出包成 `<｜tool▁outputs▁begin｜>…<｜tool▁outputs▁end｜>` 块
+fn wrap_tool_outputs(outputs: &[String]) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(outputs.iter().map(String::len).sum::<usize>() + 64);
+    for c in outputs {
+        let _ = write!(out, "<｜tool▁output▁begin｜>{c}<｜tool▁output▁end｜>");
+    }
+    out
+}
+
 pub(crate) fn build(req: &ChatCompletionsRequest, tool_ctx: &ToolContext) -> String {
     let messages = merge_messages(&req.messages);
     let mut parts: Vec<String> = Vec::with_capacity(messages.len());
@@ -116,13 +126,9 @@ pub(crate) fn build(req: &ChatCompletionsRequest, tool_ctx: &ToolContext) -> Str
                 }
                 i += 1;
             }
-            let inner: String = tool_contents
-                .iter()
-                .map(|c| format!("<｜tool▁output▁begin｜>{}<｜tool▁output▁end｜>", c))
-                .collect();
+            let inner = wrap_tool_outputs(&tool_contents);
             parts.push(format!(
-                "<｜tool▁outputs▁begin｜>{}<｜tool▁outputs▁end｜>",
-                inner
+                "<｜tool▁outputs▁begin｜>{inner}<｜tool▁outputs▁end｜>"
             ));
         } else {
             parts.push(format_message(&messages[i]));
@@ -187,7 +193,7 @@ fn role_tag(role: &str) -> String {
     if let Some(c) = r.get_mut(0..1) {
         c.make_ascii_uppercase();
     }
-    format!("<｜{}｜>", r)
+    format!("<｜{r}｜>")
 }
 
 fn format_message(msg: &Message) -> String {
@@ -207,7 +213,7 @@ fn format_message(msg: &Message) -> String {
     } else {
         ""
     };
-    format!("{}{}{}", prefix, tag, body)
+    format!("{prefix}{tag}{body}")
 }
 
 fn format_generic(msg: &Message) -> String {
@@ -265,8 +271,7 @@ fn format_assistant(msg: &Message) -> String {
 fn format_tool(msg: &Message) -> String {
     let content = msg.content.as_ref().map(format_content).unwrap_or_default();
     format!(
-        "<｜tool▁outputs▁begin｜><｜tool▁output▁begin｜>{}<｜tool▁output▁end｜><｜tool▁outputs▁end｜>",
-        content
+        "<｜tool▁outputs▁begin｜><｜tool▁output▁begin｜>{content}<｜tool▁output▁end｜><｜tool▁outputs▁end｜>"
     )
 }
 
@@ -309,8 +314,7 @@ fn format_part(part: &ContentPart) -> String {
             let fmt = part
                 .input_audio
                 .as_ref()
-                .map(|a| a.format.as_str())
-                .unwrap_or("unknown");
+                .map_or("unknown", |a| a.format.as_str());
             format!("[音频: format={fmt}]")
         }
         "file" => {

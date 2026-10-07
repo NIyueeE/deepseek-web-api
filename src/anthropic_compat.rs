@@ -39,7 +39,7 @@ pub struct AnthropicCompat {
 
 impl AnthropicCompat {
     /// 创建兼容层实例
-    pub fn new(openai_adapter: Arc<OpenAIAdapter>) -> Self {
+    pub const fn new(openai_adapter: Arc<OpenAIAdapter>) -> Self {
         Self { openai_adapter }
     }
 
@@ -86,7 +86,7 @@ impl AnthropicCompat {
     ///
     /// 返回指定模型的 Anthropic 格式详情。
     pub async fn get_model(&self, model_id: &str) -> Option<models::AnthropicModel> {
-        debug!(target: "anthropic_compat", "lookup model: {}", model_id);
+        debug!(target: "anthropic_compat", "lookup model: {model_id}");
         models::get(&self.openai_adapter.list_models().await, model_id)
     }
 }
@@ -117,7 +117,7 @@ impl From<OpenAIAdapterError> for AnthropicCompatError {
 impl AnthropicCompatError {
     /// 返回对应 HTTP 状态码
     #[must_use]
-    pub fn status_code(&self) -> u16 {
+    pub const fn status_code(&self) -> u16 {
         match self {
             Self::BadRequest(_) => 400,
             Self::Overloaded => 429,

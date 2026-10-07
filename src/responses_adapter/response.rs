@@ -55,7 +55,11 @@ pub(crate) fn next_response_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("resp_{:016x}{:016x}", now as u64, n)
+    format!(
+        "resp_{:016x}{:016x}",
+        u64::try_from(now).unwrap_or(u64::MAX),
+        n
+    )
 }
 
 fn next_item_id(prefix: &str) -> String {
@@ -238,12 +242,12 @@ fn message_item(id: &str, text: &str, status: &str) -> serde_json::Value {
         "id": id,
         "status": status,
         "role": "assistant",
-        "content": [output_text_part(text, Vec::new())],
+        "content": [output_text_part(text, &[])],
     })
 }
 
 /// 构造 `output_text` 内容块
-fn output_text_part(text: &str, annotations: Vec<serde_json::Value>) -> serde_json::Value {
+fn output_text_part(text: &str, annotations: &[serde_json::Value]) -> serde_json::Value {
     serde_json::json!({
         "type": "output_text",
         "text": text,
@@ -275,8 +279,7 @@ fn split_call(call: &crate::openai_adapter::types::ToolCall) -> (String, String)
                         c.name.clone(),
                         c.input
                             .as_ref()
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| "{}".to_string()),
+                            .map_or_else(|| "{}".to_string(), |v| v.to_string()),
                     )
                 },
             )
@@ -393,7 +396,7 @@ impl StreamState {
                 "item_id": id,
                 "output_index": index,
                 "content_index": 0,
-                "part": output_text_part("", Vec::new()),
+                "part": output_text_part("", &[]),
             }),
         );
         self.message_item = Some((id.clone(), index));
@@ -484,7 +487,7 @@ impl StreamState {
                     "item_id": id,
                     "output_index": index,
                     "content_index": 0,
-                    "part": output_text_part(&self.text, Vec::new()),
+                    "part": output_text_part(&self.text, &[]),
                 }),
             );
             self.emit(
@@ -637,9 +640,9 @@ impl StreamState {
         let (status, incomplete_details) = resolve_status(finish_reason.as_deref());
 
         let mut snapshot = self.ctx.skeleton(status);
-        snapshot.output = self.output.clone();
+        snapshot.output.clone_from(&self.output);
         snapshot.output_text = (!self.text.is_empty()).then(|| self.text.clone());
-        snapshot.usage = self.usage.clone();
+        snapshot.usage.clone_from(&self.usage);
         snapshot.incomplete_details = incomplete_details;
         if status == "completed" {
             snapshot.completed_at = Some(now_secs());
@@ -665,7 +668,7 @@ impl StreamState {
         self.emit_created();
         self.finished = true;
         let mut snapshot = self.ctx.skeleton("failed");
-        snapshot.output = self.output.clone();
+        snapshot.output.clone_from(&self.output);
         snapshot.error = Some(ResponseError {
             code: "server_error".to_string(),
             message: message.to_string(),
@@ -736,7 +739,7 @@ where
                 Poll::Ready(Some(Err(e))) => {
                     // 已开始响应时不再把错误抛给 HTTP 层（SSE 已 200），
                     // 改用协议内的 `response.failed` 事件收尾。
-                    warn!(target: "responses_adapter", "upstream stream error: {}", e);
+                    warn!(target: "responses_adapter", "upstream stream error: {e}");
                     this.state.emit_failed(&e.to_string());
                     *this.inner_done = true;
                 }

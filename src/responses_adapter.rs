@@ -86,8 +86,7 @@ impl ResponsesAdapter {
         if let Some(prev) = req.previous_response_id.as_deref() {
             let Some(turn) = self.store.get(prev) else {
                 return Err(OpenAIAdapterError::BadRequest(format!(
-                    "previous_response_id '{}' 不存在或已过期；请重放完整 input 后重试",
-                    prev
+                    "previous_response_id '{prev}' 不存在或已过期；请重放完整 input 后重试"
                 )));
             };
             history = response::history_messages(&turn);
@@ -122,21 +121,23 @@ impl ResponsesAdapter {
                     let store = self.store.clone();
                     let id = ctx.id.clone();
                     let input_text = input_text.clone();
-                    Arc::new(move |snapshot: serde_json::Value| {
-                        let output = snapshot
-                            .get("output")
-                            .and_then(|v| v.as_array())
-                            .cloned()
-                            .unwrap_or_default();
-                        store.insert(
-                            id.clone(),
-                            StoredTurn {
-                                input_text: input_text.clone(),
-                                output,
-                                response: snapshot,
-                            },
-                        );
-                    }) as response::FinishHook
+                    let hook: response::FinishHook =
+                        Arc::new(move |snapshot: serde_json::Value| {
+                            let output = snapshot
+                                .get("output")
+                                .and_then(|v| v.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            store.insert(
+                                id.clone(),
+                                StoredTurn {
+                                    input_text: input_text.clone(),
+                                    output,
+                                    response: snapshot,
+                                },
+                            );
+                        });
+                    hook
                 });
                 ResponsesOutput::Stream(response::stream(stream, ctx, hook))
             }

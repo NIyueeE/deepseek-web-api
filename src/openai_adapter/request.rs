@@ -37,10 +37,10 @@ mod tests {
 
     fn parse_json(val: serde_json::Value) -> Result<TestRequest, OpenAIAdapterError> {
         let mut req: ChatCompletionsRequest = serde_json::from_value(val)
-            .map_err(|e| OpenAIAdapterError::BadRequest(format!("bad request: {}", e)))?;
+            .map_err(|e| OpenAIAdapterError::BadRequest(format!("bad request: {e}")))?;
         let registry = default_registry();
 
-        if req.tools.as_ref().map(|t| t.is_empty()).unwrap_or(true)
+        if req.tools.as_ref().is_none_or(|t| t.is_empty())
             && let Some(functions) = req.functions.clone()
             && !functions.is_empty()
         {
@@ -81,7 +81,7 @@ mod tests {
         .map_err(OpenAIAdapterError::BadRequest)?;
 
         println!("\n=== PARSED REQUEST ===");
-        println!("prompt:\n{}", prompt);
+        println!("prompt:\n{prompt}");
         println!(
             "thinking={} search={}",
             model_res.thinking_enabled, model_res.search_enabled
@@ -246,11 +246,7 @@ mod tests {
                 "reasoning_effort": effort
             });
             let req = parse_json(body).unwrap();
-            assert_eq!(
-                req.thinking_enabled, expected,
-                "reasoning_effort={}",
-                effort
-            );
+            assert_eq!(req.thinking_enabled, expected, "reasoning_effort={effort}");
         }
 
         // 未提供 reasoning_effort 时默认开启 reasoning

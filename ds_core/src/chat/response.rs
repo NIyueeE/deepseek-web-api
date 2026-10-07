@@ -3,13 +3,14 @@
 //! 协议定义：将 DeepSeek 原始 SSE 字节流（p/o/v patch 协议）转换为结构化事件序列，
 //! 主 crate 只需消费 StreamEvent，不再感知底层格式。
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Instant;
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use pin_project_lite::pin_project;
 
@@ -72,11 +73,11 @@ impl SessionHandle {
                     message_id,
                 };
                 if let Err(e) = client.stop_stream(&token, &payload).await {
-                    log::warn!(target: "ds_core::accounts", "stop_stream failed: {}", e);
+                    log::warn!(target: "ds_core::accounts", "stop_stream failed: {e}");
                 }
             }
             if let Err(e) = client.delete_session(&token, &session_id).await {
-                log::warn!(target: "ds_core::accounts", "delete_session failed: {}", e);
+                log::warn!(target: "ds_core::accounts", "delete_session failed: {e}");
             }
             log::info!(
                 target: "ds_core::accounts",
@@ -93,9 +94,11 @@ const FRAG_THINK: &str = "THINK";
 const FRAG_RESPONSE: &str = "RESPONSE";
 
 /// Fragment 状态
+///
+/// 只记录类型：增量内容随事件**转移**给下游（下游是唯一读取方），
+/// 不再逐条 `push_str` 累积 —— 长响应下可省下与响应等长的内存与拷贝。
 struct Fragment {
     ty: String,
-    content: String,
 }
 
 /// 维护 DeepSeek 响应的 patch 状态，对齐前端 DeltaParser
@@ -108,16 +111,19 @@ struct PatchState {
     fragments: Vec<Fragment>,
     status: Option<String>,
     accumulated_token_usage: Option<u32>,
+    /// 是否已产出过非空 RESPONSE 内容（FINISHED 无内容告警用，避免缓存全文）
+    response_has_content: bool,
 }
 
 impl PatchState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             current_path: None,
             current_op: None,
             fragments: Vec::new(),
             status: None,
             accumulated_token_usage: None,
+            response_has_content: false,
         }
     }
 
@@ -142,7 +148,7 @@ impl PatchState {
 
         // event: ready → 不产出事件（在初始化阶段已处理）
         // event: hint → 检查错误
-        if let Some("hint") = event_type
+        if event_type == Some("hint")
             && let Some(data) = data
         {
             return Err(hint_to_error(data));
@@ -159,7 +165,10 @@ impl PatchState {
     }
 
     /// 应用 p/o/v patch
-    fn apply_patch(&mut self, val: serde_json::Value) -> Vec<StreamEvent> {
+    ///
+    /// `val` 按值传入并原地取用：JSON 里的增量字符串直接**移出**交给下游事件，
+    /// 避免「解析出一份 + 再拷贝一份」的双份分配。
+    fn apply_patch(&mut self, mut val: serde_json::Value) -> Vec<StreamEvent> {
         // p/o 跨事件持久化
         if let Some(p) = val.get("p").and_then(|v| v.as_str()) {
             self.current_path = Some(p.to_string());
@@ -171,13 +180,13 @@ impl PatchState {
         let op = self.current_op.as_deref().unwrap_or("SET").to_string();
         let path = self.current_path.as_deref().unwrap_or("").to_string();
 
-        let Some(v) = val.get("v") else {
+        let Some(v) = val.get_mut("v") else {
             return Vec::new();
         };
 
         // 初始快照：无 path 且 v 含 response
         if self.current_path.is_none()
-            && let Some(response) = v.get("response")
+            && let Some(response) = v.get_mut("response")
         {
             return self.apply_initial_snapshot(response);
         }
@@ -190,9 +199,9 @@ impl PatchState {
         self.apply_path(&path, &op, v)
     }
 
-    fn apply_batch(&mut self, parent_path: &str, arr: &serde_json::Value) -> Vec<StreamEvent> {
+    fn apply_batch(&mut self, parent_path: &str, arr: &mut serde_json::Value) -> Vec<StreamEvent> {
         let mut events = Vec::new();
-        let Some(arr) = arr.as_array() else {
+        let Some(arr) = arr.as_array_mut() else {
             return events;
         };
 
@@ -207,7 +216,7 @@ impl PatchState {
                 sub_op = o.to_string();
             }
 
-            let Some(v) = item.get("v") else {
+            let Some(v) = item.get_mut("v") else {
                 continue;
             };
 
@@ -216,7 +225,7 @@ impl PatchState {
             } else if sub_path.is_empty() {
                 parent_path.to_string()
             } else {
-                format!("{}/{}", parent_path, sub_path)
+                format!("{parent_path}/{sub_path}")
             };
 
             if sub_op == "BATCH" {
@@ -231,7 +240,7 @@ impl PatchState {
         events
     }
 
-    fn apply_initial_snapshot(&mut self, response: &serde_json::Value) -> Vec<StreamEvent> {
+    fn apply_initial_snapshot(&mut self, response: &mut serde_json::Value) -> Vec<StreamEvent> {
         let mut events = Vec::new();
 
         if let Some(s) = response.get("status").and_then(|v| v.as_str()) {
@@ -245,41 +254,50 @@ impl PatchState {
             self.accumulated_token_usage = Some(u32::try_from(n).unwrap_or(u32::MAX));
         }
 
-        if let Some(arr) = response.get("fragments").and_then(|f| f.as_array()) {
+        if let Some(arr) = response.get_mut("fragments").and_then(|f| f.as_array_mut()) {
             self.fragments.clear();
             for frag in arr {
-                let Some(ty) = frag.get("type").and_then(|t| t.as_str()) else {
+                let Some(obj) = frag.as_object_mut() else {
                     continue;
                 };
-                let content = frag
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                self.fragments.push(Fragment {
-                    ty: ty.to_string(),
-                    content: content.clone(),
-                });
+                let Some(ty) = obj.remove("type").and_then(take_string_owned) else {
+                    continue;
+                };
+                let content = obj
+                    .get_mut("content")
+                    .and_then(take_string)
+                    .unwrap_or_default();
+                let is_think = ty == FRAG_THINK;
+                let is_response = ty == FRAG_RESPONSE;
+                if is_response && !content.is_empty() {
+                    self.response_has_content = true;
+                }
                 if !content.is_empty() {
-                    match ty {
-                        FRAG_THINK => events.push(StreamEvent::ThinkDelta { content }),
-                        FRAG_RESPONSE => events.push(StreamEvent::ContentDelta { content }),
-                        _ => {}
+                    if is_think {
+                        events.push(StreamEvent::ThinkDelta { content });
+                    } else if is_response {
+                        events.push(StreamEvent::ContentDelta { content });
                     }
                 }
+                self.fragments.push(Fragment { ty });
             }
         }
 
         events
     }
 
-    fn apply_path(&mut self, path: &str, op: &str, val: &serde_json::Value) -> Vec<StreamEvent> {
+    fn apply_path(
+        &mut self,
+        path: &str,
+        op: &str,
+        val: &mut serde_json::Value,
+    ) -> Vec<StreamEvent> {
         let mut events = Vec::new();
 
         match path {
             "response/status" | "/response/status" => {
-                if let Some(s) = val.as_str() {
-                    self.status = Some(s.to_string());
+                if let Some(s) = take_string(val) {
+                    self.status = Some(s);
                 }
             }
             "response/accumulated_token_usage"
@@ -291,49 +309,43 @@ impl PatchState {
                 }
             }
             "response/fragments/-1/content" | "/response/fragments/-1/content" => {
-                if let Some(s) = val.as_str()
-                    && let Some(frag) = self.fragments.last_mut()
+                if let Some(s) = take_string(val)
+                    && let Some(frag) = self.fragments.last()
                 {
                     match frag.ty.as_str() {
-                        FRAG_THINK => {
-                            frag.content.push_str(s);
-                            events.push(StreamEvent::ThinkDelta {
-                                content: s.to_string(),
-                            });
-                        }
+                        FRAG_THINK => events.push(StreamEvent::ThinkDelta { content: s }),
                         FRAG_RESPONSE => {
-                            frag.content.push_str(s);
-                            events.push(StreamEvent::ContentDelta {
-                                content: s.to_string(),
-                            });
+                            self.response_has_content = true;
+                            events.push(StreamEvent::ContentDelta { content: s });
                         }
                         _ => {}
                     }
                 }
             }
             "response/fragments" | "/response/fragments" if op == "APPEND" => {
-                if let Some(arr) = val.as_array() {
+                if let Some(arr) = val.as_array_mut() {
                     for item in arr {
-                        if let Some(ty) = item.get("type").and_then(|t| t.as_str()) {
-                            let content = item
-                                .get("content")
-                                .and_then(|c| c.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            self.fragments.push(Fragment {
-                                ty: ty.to_string(),
-                                content: content.clone(),
-                            });
-                            if !content.is_empty() {
-                                match ty {
-                                    FRAG_THINK => events.push(StreamEvent::ThinkDelta { content }),
-                                    FRAG_RESPONSE => {
-                                        events.push(StreamEvent::ContentDelta { content });
-                                    }
-                                    _ => {}
-                                }
+                        let Some(obj) = item.as_object_mut() else {
+                            continue;
+                        };
+                        let Some(ty) = obj.remove("type").and_then(take_string_owned) else {
+                            continue;
+                        };
+                        let content = obj
+                            .get_mut("content")
+                            .and_then(take_string)
+                            .unwrap_or_default();
+                        let is_think = ty == FRAG_THINK;
+                        let is_response = ty == FRAG_RESPONSE;
+                        if !content.is_empty() {
+                            if is_think {
+                                events.push(StreamEvent::ThinkDelta { content });
+                            } else if is_response {
+                                self.response_has_content = true;
+                                events.push(StreamEvent::ContentDelta { content });
                             }
                         }
+                        self.fragments.push(Fragment { ty });
                     }
                 }
             }
@@ -342,6 +354,30 @@ impl PatchState {
 
         events
     }
+}
+
+/// 取出 JSON 字符串的所有权（内容不复制）
+fn take_string(val: &mut serde_json::Value) -> Option<String> {
+    match val {
+        serde_json::Value::String(s) => Some(std::mem::take(s)),
+        _ => None,
+    }
+}
+
+/// 取出 `serde_json::Value` 内部字符串的所有权
+fn take_string_owned(val: serde_json::Value) -> Option<String> {
+    match val {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// SSE 帧字节 → 文本
+///
+/// 帧内是 UTF-8 JSON：合法时**借用**帧缓冲（零拷贝），
+/// 仅在非法字节序列时退化为有损解码。
+fn frame_str(frame: &[u8]) -> Cow<'_, str> {
+    std::str::from_utf8(frame).map_or_else(|_| String::from_utf8_lossy(frame), Cow::Borrowed)
 }
 
 // ── 响应阶段跟踪 ─────────────────────────────────────────────────────
@@ -360,10 +396,10 @@ pin_project! {
         _guard: AccountGuard,
         session: SessionHandle,
 
-        buf: Vec<u8>,
+        buf: BytesMut,
         patch_state: PatchState,
         phase: Phase,
-        pending: Vec<StreamEvent>,
+        pending: VecDeque<StreamEvent>,
         meta_sent: bool,
         account_id: String,
         finished: bool,
@@ -388,10 +424,10 @@ impl ResponseStream {
             raw,
             _guard: guard,
             session,
-            buf: Vec::new(),
+            buf: BytesMut::new(),
             patch_state: PatchState::new(),
             phase: Phase::Init,
-            pending: Vec::new(),
+            pending: VecDeque::new(),
             meta_sent: false,
             account_id,
             finished: false,
@@ -414,7 +450,7 @@ impl Stream for ResponseStream {
         }
 
         // 先清空 pending 队列
-        if let Some(evt) = this.pending.pop() {
+        if let Some(evt) = this.pending.pop_front() {
             return Poll::Ready(Some(Ok(evt)));
         }
 
@@ -424,7 +460,7 @@ impl Stream for ResponseStream {
 
         loop {
             if let Some(frame) = take_frame(this.buf) {
-                let events = match this.patch_state.apply_frame(&frame) {
+                let events = match this.patch_state.apply_frame(frame_str(&frame).as_ref()) {
                     Ok(evts) => evts,
                     Err(e) => return Poll::Ready(Some(Err(e))),
                 };
@@ -434,14 +470,12 @@ impl Stream for ResponseStream {
                 }
 
                 // 过滤：阶段切换信号插入 + 延后排队
-                let mut filtered = Vec::new();
+                let mut filtered = VecDeque::new();
                 finalize_events(this.patch_state, this.phase, events, &mut filtered);
 
-                // 第一个事件立即返回，其余入 pending
-                if let Some(first) = filtered.first().cloned() {
-                    for rest in filtered.into_iter().skip(1).rev() {
-                        this.pending.push(rest);
-                    }
+                // 第一个事件立即返回（移动而非克隆），其余入 pending
+                if let Some(first) = filtered.pop_front() {
+                    this.pending.extend(filtered);
                     return Poll::Ready(Some(Ok(first)));
                 }
             }
@@ -459,17 +493,17 @@ impl Stream for ResponseStream {
                     // 冲刷缓冲区中剩余数据。上游在 status=FINISHED 之后偶发直接断流，
                     // 最后几帧（含 accumulated_token_usage / response/status）可能不带
                     // 结尾空行；必须在这里解析，否则会丢掉 finish_reason 与 token 用量。
-                    let mut flushed = Vec::new();
+                    let mut flushed = VecDeque::new();
                     loop {
                         let frame = if let Some(f) = take_frame(this.buf) {
                             f
                         } else if this.buf.is_empty() {
                             break;
                         } else {
-                            let drained: Vec<u8> = this.buf.drain(..).collect();
-                            String::from_utf8_lossy(&drained).to_string()
+                            // 取走剩余字节（O(1) 切分），交给帧解析
+                            this.buf.split()
                         };
-                        let events = this.patch_state.apply_frame(&frame)?;
+                        let events = this.patch_state.apply_frame(frame_str(&frame).as_ref())?;
                         // 即使 events 为空也要走一遍：status→Done 的转换在这里发生
                         finalize_events(this.patch_state, this.phase, events, &mut flushed);
                     }
@@ -478,10 +512,8 @@ impl Stream for ResponseStream {
                         finalize_events(this.patch_state, this.phase, Vec::new(), &mut flushed);
                     }
 
-                    if let Some(first) = flushed.first().cloned() {
-                        for rest in flushed.into_iter().skip(1).rev() {
-                            this.pending.push(rest);
-                        }
+                    if let Some(first) = flushed.pop_front() {
+                        this.pending.extend(flushed);
                         return Poll::Ready(Some(Ok(first)));
                     }
 
@@ -503,11 +535,14 @@ impl Stream for ResponseStream {
 
 // ── SSE 帧提取 ───────────────────────────────────────────────────────
 
-fn take_frame(buf: &mut Vec<u8>) -> Option<String> {
+/// 取出一个完整 SSE 帧（不含分隔的 `\n\n`）
+///
+/// 用 `BytesMut::split_to` 做 O(1) 指针切分：不搬运剩余字节，也不做 UTF-8 拷贝。
+fn take_frame(buf: &mut BytesMut) -> Option<BytesMut> {
     let pos = buf.windows(2).position(|w| w == b"\n\n")?;
-    let frame_bytes: Vec<u8> = buf.drain(..pos).collect();
-    buf.drain(..2);
-    Some(String::from_utf8_lossy(&frame_bytes).to_string())
+    let frame = buf.split_to(pos);
+    buf.advance(2);
+    Some(frame)
 }
 
 fn hint_to_error(data: &str) -> CoreError {
@@ -523,7 +558,7 @@ fn hint_to_error(data: &str) -> CoreError {
     } else if content.contains("input_exceeds_limit") {
         CoreError::ProviderError("输入内容超长，请缩短后重试".into())
     } else {
-        CoreError::ProviderError(format!("hint: {}", content))
+        CoreError::ProviderError(format!("hint: {content}"))
     }
 }
 
@@ -537,23 +572,23 @@ fn finalize_events(
     patch_state: &PatchState,
     phase: &mut Phase,
     events: Vec<StreamEvent>,
-    out: &mut Vec<StreamEvent>,
+    out: &mut VecDeque<StreamEvent>,
 ) {
     for evt in events {
         match &evt {
             StreamEvent::ThinkDelta { .. } if *phase == Phase::Init || *phase == Phase::Content => {
                 *phase = Phase::Thinking;
-                out.push(StreamEvent::ThinkStart);
+                out.push_back(StreamEvent::ThinkStart);
             }
             StreamEvent::ContentDelta { .. }
                 if *phase == Phase::Init || *phase == Phase::Thinking =>
             {
                 *phase = Phase::Content;
-                out.push(StreamEvent::ContentStart);
+                out.push_back(StreamEvent::ContentStart);
             }
             _ => {}
         }
-        out.push(evt);
+        out.push_back(evt);
     }
 
     if let Some(status) = &patch_state.status
@@ -569,7 +604,7 @@ fn finalize_events(
                 "状态机 FINISHED 但无 RESPONSE 内容"
             );
         }
-        out.push(StreamEvent::Done {
+        out.push_back(StreamEvent::Done {
             finish_reason: finish,
             accumulated_token_usage: usage,
         });
@@ -577,11 +612,8 @@ fn finalize_events(
 }
 
 /// 检查是否有非空的 RESPONSE 内容（用于 FINISHED 告警）
-fn has_response_content(state: &PatchState) -> bool {
-    state
-        .fragments
-        .iter()
-        .any(|f| f.ty == "RESPONSE" && !f.content.is_empty())
+const fn has_response_content(state: &PatchState) -> bool {
+    state.response_has_content
 }
 
 // ── 公开辅助（供 request.rs 初始化阶段使用） ──────────────────────────
@@ -641,12 +673,12 @@ pub(crate) fn parse_json_error(text: &str, request_id: &str) -> CoreError {
             .to_string();
         log::error!(
             target: "ds_core::accounts",
-            "req={} JSON 错误响应: code={}, msg={}", request_id, code, msg
+            "req={request_id} JSON 错误响应: code={code}, msg={msg}"
         );
         return match code {
             1001 | 1201 => CoreError::Overloaded,
-            40301 => CoreError::ProviderError(format!("INVALID_POW_RESPONSE: {}", msg)),
-            _ => CoreError::ProviderError(format!("API error code={}: {}", code, msg)),
+            40301 => CoreError::ProviderError(format!("INVALID_POW_RESPONSE: {msg}")),
+            _ => CoreError::ProviderError(format!("API error code={code}: {msg}")),
         };
     }
     log::error!(
@@ -677,8 +709,7 @@ pub(crate) async fn wait_ready_and_update(
                     return parse_json_error(&raw, request_id);
                 }
                 CoreError::Stream(format!(
-                    "req={} 分块 {}/{} 收到空流",
-                    request_id, chunk_index, total_chunks
+                    "req={request_id} 分块 {chunk_index}/{total_chunks} 收到空流"
                 ))
             })?
             .map_err(|e| CoreError::Stream(e.to_string()))?;
@@ -692,7 +723,7 @@ pub(crate) async fn wait_ready_and_update(
             events.len().saturating_sub(1)
         };
 
-        for event in events[..n_complete].iter() {
+        for event in &events[..n_complete] {
             if event.is_empty() {
                 continue;
             }
@@ -735,7 +766,7 @@ pub(crate) async fn wait_close(
             events.len().saturating_sub(1)
         };
 
-        for event in events[..n_complete].iter() {
+        for event in &events[..n_complete] {
             if event.lines().any(|l| {
                 l.trim()
                     .strip_prefix("event:")
@@ -750,8 +781,7 @@ pub(crate) async fn wait_close(
             .await
             .ok_or_else(|| {
                 CoreError::Stream(format!(
-                    "req={} 分块 {}/{} 流在 close 前结束",
-                    request_id, chunk_index, total_chunks
+                    "req={request_id} 分块 {chunk_index}/{total_chunks} 流在 close 前结束"
                 ))
             })?
             .map_err(|e| CoreError::Stream(e.to_string()))?;
@@ -771,12 +801,12 @@ mod tests {
         state.status = Some("FINISHED".to_string());
         state.accumulated_token_usage = Some(87);
         let mut phase = Phase::Content;
-        let mut out = Vec::new();
+        let mut out = VecDeque::new();
 
         finalize_events(&state, &mut phase, Vec::new(), &mut out);
 
         assert_eq!(phase, Phase::Done);
-        match out.as_slice() {
+        match out.make_contiguous() {
             [
                 StreamEvent::Done {
                     finish_reason,
@@ -797,11 +827,11 @@ mod tests {
         state.status = Some("INCOMPLETE".to_string());
         state.accumulated_token_usage = Some(12);
         let mut phase = Phase::Content;
-        let mut out = Vec::new();
+        let mut out = VecDeque::new();
 
         finalize_events(&state, &mut phase, Vec::new(), &mut out);
 
-        match out.as_slice() {
+        match out.make_contiguous() {
             [
                 StreamEvent::Done {
                     finish_reason,
@@ -821,7 +851,7 @@ mod tests {
         let mut state = PatchState::new();
         state.status = Some("FINISHED".to_string());
         let mut phase = Phase::Done;
-        let mut out = Vec::new();
+        let mut out = VecDeque::new();
 
         finalize_events(&state, &mut phase, Vec::new(), &mut out);
 
@@ -835,7 +865,7 @@ mod tests {
         state.status = Some("FINISHED".to_string());
         state.accumulated_token_usage = Some(5);
         let mut phase = Phase::Init;
-        let mut out = Vec::new();
+        let mut out = VecDeque::new();
 
         finalize_events(
             &state,
@@ -846,9 +876,9 @@ mod tests {
             &mut out,
         );
 
-        assert!(matches!(out[0], StreamEvent::ContentStart));
-        assert!(matches!(out[1], StreamEvent::ContentDelta { .. }));
-        assert!(matches!(out[2], StreamEvent::Done { .. }));
+        assert!(matches!(&out[0], StreamEvent::ContentStart));
+        assert!(matches!(&out[1], StreamEvent::ContentDelta { .. }));
+        assert!(matches!(&out[2], StreamEvent::Done { .. }));
         assert_eq!(out.len(), 3);
     }
 }

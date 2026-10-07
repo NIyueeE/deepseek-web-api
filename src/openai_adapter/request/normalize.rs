@@ -30,31 +30,22 @@ pub(crate) fn apply(req: &ChatCompletionsRequest) -> Result<NormalizedParams, St
         match msg.role.as_str() {
             "tool" if msg.tool_call_id.is_none() => {
                 return Err(format!(
-                    "messages[{}] 角色为 'tool' 时必须提供 'tool_call_id'",
-                    i
+                    "messages[{i}] 角色为 'tool' 时必须提供 'tool_call_id'"
                 ));
             }
             "function" if msg.name.is_none() => {
-                return Err(format!(
-                    "messages[{}] 角色为 'function' 时必须提供 'name'",
-                    i
-                ));
+                return Err(format!("messages[{i}] 角色为 'function' 时必须提供 'name'"));
             }
             _ => {}
         }
     }
 
-    let include_usage = req
-        .stream_options
-        .as_ref()
-        .map(|o| o.include_usage)
-        .unwrap_or(false);
+    let include_usage = req.stream_options.as_ref().is_some_and(|o| o.include_usage);
 
     let include_obfuscation = req
         .stream_options
         .as_ref()
-        .map(|o| o.include_obfuscation)
-        .unwrap_or(true);
+        .is_none_or(|o| o.include_obfuscation);
 
     let stop = match &req.stop {
         Some(StopSequence::Single(s)) => vec![s.clone()],

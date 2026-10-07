@@ -97,8 +97,8 @@ impl DsCore {
     }
 
     /// 动态移除账号
-    pub async fn remove_account(&self, email_or_mobile: &str) -> Result<String, PoolError> {
-        self.accounts.remove_account(email_or_mobile).await
+    pub fn remove_account(&self, email_or_mobile: &str) -> Result<String, PoolError> {
+        self.accounts.remove_account(email_or_mobile)
     }
 
     /// 标记账号为 Error 状态
@@ -111,10 +111,9 @@ impl DsCore {
         self.accounts.re_login_single(email_or_mobile).await
     }
 
-    /// 优雅关闭：清理所有账号的 session
+    /// 优雅关闭：清理所有残留 session
     pub async fn shutdown(&self) {
         self.chat.shutdown().await;
-        self.accounts.shutdown().await;
     }
 
     pub async fn reload_config(&self, config: &DsCoreConfig) -> Result<(), CoreError> {

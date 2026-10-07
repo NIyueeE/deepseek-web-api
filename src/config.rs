@@ -130,7 +130,7 @@ impl DsCoreSection {
     pub fn model_registry(&self) -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
         for (i, ty) in self.model_types.iter().enumerate() {
-            map.insert(format!("deepseek-{}", ty).to_lowercase(), ty.clone());
+            map.insert(format!("deepseek-{ty}").to_lowercase(), ty.clone());
             // 裸名：`default` / `expert` / `vision` 直接可用
             map.entry(ty.to_lowercase()).or_insert_with(|| ty.clone());
             if let Some(alias) = self.model_aliases.get(i) {
@@ -262,7 +262,7 @@ fn default_input_character_limits() -> Vec<u32> {
 /// 取 60：远低于实测触发禁言的 ~215 次/小时量级，同时单账号仍能支撑
 /// 常规交互式使用（平均每分钟 1 次）。需要更高吞吐时请增加账号数量，
 /// 而不是抬高这个值 —— 这正是本配额想传达的约束。
-fn default_hourly_request_quota() -> u64 {
+const fn default_hourly_request_quota() -> u64 {
     60
 }
 
@@ -270,19 +270,19 @@ fn default_hourly_request_quota() -> u64 {
 ///
 /// 默认 `true`：与历史行为一致（此前 resolver 无条件返回 true）。
 /// 文档曾声称「省略即关闭」，但代码从未如此实现；这里把开关做实并保持兼容。
-fn default_search_enabled() -> bool {
+const fn default_search_enabled() -> bool {
     true
 }
 
 /// Responses API 上下文缓存条数上限
 ///
 /// 每条缓存只保存一轮的 output 数组（通常几 KB），256 条约占用几 MB 内存。
-fn default_responses_store_capacity() -> usize {
+const fn default_responses_store_capacity() -> usize {
     256
 }
 
 /// Responses API 上下文缓存存活时间
-fn default_responses_store_ttl_secs() -> u64 {
+const fn default_responses_store_ttl_secs() -> u64 {
     3600
 }
 
@@ -322,7 +322,7 @@ fn default_client_os() -> String {
     "android".to_string()
 }
 
-fn default_hif_enabled() -> bool {
+const fn default_hif_enabled() -> bool {
     true
 }
 
@@ -337,7 +337,7 @@ pub struct ServerConfig {
     pub host: String,
     /// 监听端口
     pub port: u16,
-    /// CORS 允许的 Origin 列表，默认 ["http://localhost:22217"]
+    /// CORS 允许的 Origin 列表，默认 `["http://localhost:22217"]`
     #[serde(default = "default_cors_origins")]
     pub cors_origins: Vec<String>,
 }
@@ -465,8 +465,7 @@ impl Config {
                 // 按字符截断，避免非 ASCII key 在字节切片处 panic
                 let prefix: String = k.key.chars().take(12).collect();
                 return Err(ConfigError::Validation(format!(
-                    "API key 重复: {}...",
-                    prefix
+                    "API key 重复: {prefix}..."
                 )));
             }
         }

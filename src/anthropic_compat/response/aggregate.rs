@@ -46,17 +46,16 @@ pub fn from_chat_completions(resp: &ChatCompletionsResponse) -> MessagesResponse
         .map(finish_reason_map)
         .or_else(|| Some("end_turn".to_string()));
 
-    let usage = resp
-        .usage
-        .as_ref()
-        .map(|u| Usage {
-            input_tokens: u.prompt_tokens,
-            output_tokens: u.completion_tokens,
-        })
-        .unwrap_or(Usage {
+    let usage = resp.usage.as_ref().map_or(
+        Usage {
             input_tokens: 0,
             output_tokens: 0,
-        });
+        },
+        |u| Usage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+        },
+    );
 
     debug!(target: "anthropic_compat::response::aggregate", "mapping done: content_blocks={}", content.len());
     MessagesResponse {
@@ -112,7 +111,7 @@ mod tests {
         ChatCompletionsResponse {
             id: id.to_string(),
             object: "chat.completion",
-            created: 1713700000,
+            created: 1_713_700_000,
             model: model.to_string(),
             choices: vec![Choice {
                 index: 0,

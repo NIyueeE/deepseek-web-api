@@ -177,6 +177,20 @@ impl PowSolver {
             write_string(&mut store, &memory, &alloc, &challenge.challenge)?;
         let (ptr_prefix, len_prefix) = write_string(&mut store, &memory, &alloc, &prefix)?;
 
+        // WASM 的 solve 接收 JS number；difficulty 由上游下发且远小于 2^53，
+        // 用 u32 中转即可无损转成 f64。越界值按 u32::MAX 处理，最终以 NoSolution 收敛。
+        let difficulty = u32::try_from(challenge.difficulty).map_or_else(
+            |_| {
+                log::warn!(
+                    target: "ds_core::client",
+                    "PoW difficulty 越界: {}",
+                    challenge.difficulty
+                );
+                f64::from(u32::MAX)
+            },
+            f64::from,
+        );
+
         wasm_solve
             .call(
                 &mut store,
@@ -186,7 +200,7 @@ impl PowSolver {
                     len_challenge,
                     ptr_prefix,
                     len_prefix,
-                    challenge.difficulty as f64,
+                    difficulty,
                 ),
             )
             .map_err(|e| PowError::Execution(e.to_string()))?;
@@ -215,7 +229,7 @@ impl PowSolver {
             algorithm: challenge.algorithm.clone(),
             challenge: challenge.challenge.clone(),
             salt: challenge.salt.clone(),
-            answer: value as i64,
+            answer: parse_answer(value)?,
             signature: challenge.signature.clone(),
             target_path: challenge.target_path.clone(),
         })
@@ -231,7 +245,13 @@ fn write_string(
     s: &str,
 ) -> Result<(i32, i32), PowError> {
     let bytes = s.as_bytes();
-    let len = bytes.len() as i32;
+    // WASM 侧长度参数是 i32：超长直接报错，避免无声截断
+    let len = i32::try_from(bytes.len()).map_err(|_| {
+        PowError::Execution(format!(
+            "字符串过长无法写入 WASM 内存: {} 字节",
+            bytes.len()
+        ))
+    })?;
     let ptr = alloc
         .call(store.as_context_mut(), (len, 1))
         .map_err(|e| PowError::Execution(e.to_string()))?;
@@ -241,8 +261,23 @@ fn write_string(
     Ok((ptr, len))
 }
 
+/// 将 WASM 返回的答案转成 i64
+///
+/// WASM 侧返回的是 f64 整数。直接 `as i64` 在越界/NaN 时会静默饱和，
+/// 这里显式截断小数部分并在越界时报错 —— PoW 求解开销远大于一次格式化。
+fn parse_answer(value: f64) -> Result<i64, PowError> {
+    if !value.is_finite() {
+        return Err(PowError::Execution(format!("WASM 返回非有限答案: {value}")));
+    }
+    value
+        .trunc()
+        .to_string()
+        .parse()
+        .map_err(|_| PowError::Execution(format!("WASM 答案超出 i64 范围: {value}")))
+}
+
 fn find_export_by_names(
-    exports: &[wasmtime::ExportType],
+    exports: &[wasmtime::ExportType<'_>],
     names: &[&str],
     params: &[ValType],
     results: &[ValType],
@@ -254,7 +289,7 @@ fn find_export_by_names(
 }
 
 fn find_export_by_prefix(
-    exports: &[wasmtime::ExportType],
+    exports: &[wasmtime::ExportType<'_>],
     prefix: &str,
     params: &[ValType],
     results: &[ValType],
@@ -265,7 +300,7 @@ fn find_export_by_prefix(
         .map(|e| e.name().to_string())
 }
 
-fn matches_sig(e: &wasmtime::ExportType, params: &[ValType], results: &[ValType]) -> bool {
+fn matches_sig(e: &wasmtime::ExportType<'_>, params: &[ValType], results: &[ValType]) -> bool {
     let ext_ty = e.ty();
     let Some(func_ty) = ext_ty.func() else {
         return false;

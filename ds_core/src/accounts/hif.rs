@@ -28,7 +28,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 /// 到期前提前刷新，避免在边界上发出即将失效的令牌
 const REFRESH_MARGIN: Duration = Duration::from_secs(30);
 /// 取令牌失败后的退避：避免每个请求都白等一次 3s 超时
-const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
+const FAILURE_BACKOFF: Duration = Duration::from_mins(1);
 
 #[derive(Debug, Deserialize)]
 struct HifEnvelope {
@@ -201,7 +201,13 @@ impl HifToken {
 
     /// 主动预热（账号初始化时调用，避免首个业务请求才现取）
     pub(crate) async fn warm_up(&self) {
-        let _ = self.value().await;
+        // 失败细节已在 value() 内记录；这里只观测结果，业务请求照常继续
+        if self.value().await.is_none() {
+            debug!(
+                target: "ds_core::client",
+                "HIF 预热未取到令牌，首个请求将不带 x-hif-leim"
+            );
+        }
     }
 
     async fn fetch(&self) -> Result<(String, Duration), ClientError> {

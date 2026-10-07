@@ -118,7 +118,7 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
             let file = parts[1];
             let body = load_json(file)?;
             let rid = demo_req_id();
-            println!(">>> chat: {} [req={}]", file, rid);
+            println!(">>> chat: {file} [req={rid}]");
             let req = serde_json::from_slice::<ChatCompletionsRequest>(&body)?;
             let result = adapter.chat_completions(req, &rid).await?;
             println!("[account: {}]", result.account_id);
@@ -129,7 +129,7 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
                     while let Some(chunk) = s.next().await {
                         match chunk {
                             Ok(c) => println!("{}", serde_json::to_string(&c).unwrap()),
-                            Err(e) => eprintln!("流错误: {}", e),
+                            Err(e) => eprintln!("流错误: {e}"),
                         }
                     }
                 }
@@ -141,7 +141,7 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
             let file = parts[1];
             let body = load_json(file)?;
             let rid = demo_req_id();
-            println!(">>> raw: {} [req={}]", file, rid);
+            println!(">>> raw: {file} [req={rid}]");
             let mut result = adapter.raw_chat_completions_stream(&body, &rid).await?;
             println!("[account: {}]", result.account_id);
             print_stream(&mut result.data, true).await;
@@ -150,30 +150,24 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
         "compare" if parts.len() >= 2 => {
             let file = parts[1];
             let body = load_json(file)?;
-            println!(">>> compare: {}", file);
+            println!(">>> compare: {file}");
 
             // 原始流
             let rid1 = demo_req_id();
-            println!(
-                "\n═══ RAW DEEPSEEK SSE [req={}] ═════════════════════════════════",
-                rid1
-            );
+            println!("\n═══ RAW DEEPSEEK SSE [req={rid1}] ═════════════════════════════════");
             let raw_result = adapter.raw_chat_completions_stream(&body, &rid1).await?;
             println!("[account: {}]", raw_result.account_id);
             consume_stream(raw_result.data, |bytes| {
                 let text = String::from_utf8_lossy(&bytes);
                 for line in text.lines() {
-                    println!("  {}", line);
+                    println!("  {line}");
                 }
             })
             .await;
 
             // 转换后流
             let rid2 = demo_req_id();
-            println!(
-                "\n═══ CONVERTED OPENAI SSE [req={}] ═════════════════════════════",
-                rid2
-            );
+            println!("\n═══ CONVERTED OPENAI SSE [req={rid2}] ═════════════════════════════");
             let conv_req = serde_json::from_slice::<ChatCompletionsRequest>(&body)?;
             let converted_result = adapter.chat_completions(conv_req, &rid2).await?;
             println!("[account: {}]", converted_result.account_id);
@@ -183,7 +177,7 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
                     while let Some(chunk) = s.next().await {
                         match chunk {
                             Ok(c) => println!("  {}", serde_json::to_string(&c).unwrap()),
-                            Err(e) => eprintln!("流错误: {}", e),
+                            Err(e) => eprintln!("流错误: {e}"),
                         }
                     }
                 }
@@ -204,7 +198,7 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
             };
             let file = positional[2];
             let body = load_json(file)?;
-            println!(">>> concurrent: count={}, file={}", count, file);
+            println!(">>> concurrent: count={count}, file={file}");
             run_concurrent(adapter, count, body, raw).await;
         }
 
@@ -224,17 +218,17 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
         "source" if parts.len() == 2 => {
             let file = parts[1];
             if !Path::new(file).exists() {
-                eprintln!("[错误] 文件不存在: {}", file);
+                eprintln!("[错误] 文件不存在: {file}");
                 return Ok(false);
             }
-            println!("[执行脚本: {}]", file);
+            println!("[执行脚本: {file}]");
             let content = std::fs::read_to_string(file)?;
             for script_line in content.lines() {
                 let script_line = script_line.trim();
                 if script_line.is_empty() || script_line.starts_with('#') {
                     continue;
                 }
-                println!(">>> {}", script_line);
+                println!(">>> {script_line}");
                 if Box::pin(handle_line(script_line, adapter)).await? {
                     return Ok(true);
                 }
@@ -249,8 +243,7 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
 
         _ => {
             println!(
-                "[未知命令: {}] 可用: chat | raw | compare | concurrent | models | model | status | source | quit",
-                cmd
+                "[未知命令: {cmd}] 可用: chat | raw | compare | concurrent | models | model | status | source | quit"
             );
         }
     }
@@ -261,7 +254,7 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
 fn load_json(file: &str) -> anyhow::Result<Vec<u8>> {
     let path = Path::new(file);
     if !path.exists() {
-        anyhow::bail!("文件不存在: {}", file);
+        anyhow::bail!("文件不存在: {file}");
     }
     Ok(std::fs::read(path)?)
 }
@@ -276,7 +269,7 @@ where
         match res {
             Ok(bytes) => f(bytes),
             Err(e) => {
-                eprintln!("\n[流错误] {}", e);
+                eprintln!("\n[流错误] {e}");
                 break;
             }
         }
@@ -297,7 +290,7 @@ async fn print_stream(stream: &mut StreamResponse, raw: bool) {
                 }
             }
             Err(e) => {
-                eprintln!("\n[流错误] {}", e);
+                eprintln!("\n[流错误] {e}");
                 break;
             }
         }
@@ -316,7 +309,7 @@ fn print_stream_chunk(bytes: &Bytes) {
         .unwrap_or(&text);
 
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) else {
-        print!("{}", text);
+        print!("{text}");
         return;
     };
 
@@ -337,16 +330,16 @@ fn print_stream_chunk(bytes: &Bytes) {
     if (choice.is_none() || usage.is_some())
         && let Some(u) = usage
     {
-        println!("[usage] {}", u);
+        println!("[usage] {u}");
         return;
     }
 
     let mut parts = Vec::new();
     if let Some(c) = content {
-        parts.push(format!("content={:?}", c));
+        parts.push(format!("content={c:?}"));
     }
     if let Some(r) = reasoning {
-        parts.push(format!("reasoning={:?}", r));
+        parts.push(format!("reasoning={r:?}"));
     }
     if let Some(t) = tool_calls {
         parts.push(format!(
@@ -355,7 +348,7 @@ fn print_stream_chunk(bytes: &Bytes) {
         ));
     }
     if let Some(f) = finish {
-        parts.push(format!("finish={}", f));
+        parts.push(format!("finish={f}"));
     }
 
     if !parts.is_empty() {
@@ -377,7 +370,7 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body: Vec<u8>, ra
                 let req = match serde_json::from_slice::<ChatCompletionsRequest>(&body) {
                     Ok(r) => r,
                     Err(e) => {
-                        eprintln!("[请求{} 解析失败] {}", i, e);
+                        eprintln!("[请求{i} 解析失败] {e}");
                         return (i, false, String::new(), req_start.elapsed());
                     }
                 };
@@ -385,7 +378,7 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body: Vec<u8>, ra
                 let result = match adapter.chat_completions(req, &rid).await {
                     Ok(r) => r,
                     Err(e) => {
-                        eprintln!("[请求{} 失败] {}", i, e);
+                        eprintln!("[请求{i} 失败] {e}");
                         return (i, false, String::new(), req_start.elapsed());
                     }
                 };
@@ -414,7 +407,7 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body: Vec<u8>, ra
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("\n[请求{} 流错误] {}", i, e);
+                                    eprintln!("\n[请求{i} 流错误] {e}");
                                     ok = false;
                                     break;
                                 }
@@ -471,8 +464,5 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body: Vec<u8>, ra
             }
         );
     }
-    println!(
-        "  总计: {}/{} 成功 | 总耗时 {:?}",
-        success_count, count, total_elapsed
-    );
+    println!("  总计: {success_count}/{count} 成功 | 总耗时 {total_elapsed:?}");
 }

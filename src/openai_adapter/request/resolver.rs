@@ -43,7 +43,7 @@ pub(crate) fn resolve(
     let model_type = registry
         .get(&key)
         .cloned()
-        .ok_or_else(|| format!("不支持的模型: {}", model_id))?;
+        .ok_or_else(|| format!("不支持的模型: {model_id}"))?;
 
     let reasoning_effort = reasoning_effort.unwrap_or("high");
     let thinking_enabled = reasoning_effort != "none";
