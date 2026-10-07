@@ -730,6 +730,66 @@ UA / `client_platform` / `client_os` 切成 web，则应同时设 `emulation = "
 
 ---
 
+## 默认配置：对齐浏览器（2026-10-07 定稿原则）
+
+**原则**：我们并不知道上游依据哪些信号判定违规（账号历史、请求形态、prompt 形态、
+身份自洽性……都有可能）。因此唯一可操作的策略是**每一个可观测行为都向真实客户端靠拢**，
+让代理流量在统计上与官方 Web 客户端不可区分。默认配置即按此设定。
+
+### 逐头比对（本地 echo server vs 真实浏览器抓包）
+
+用 `ds_core` 的真实客户端代码请求本地 echo server（`/home/dsh/tmp/echo_server.py`），
+把实际发出的头与浏览器抓包（`capture-a1.json` 的 `/chat_session/fetch_page`）逐项比对：
+
+| 头 | 真实浏览器（XHR） | 本代理（修复前，chrome136 档默认） | 本代理（现在） |
+|----|------------------|-----------------------------------|----------------|
+| `accept` | `*/*` | `text/html,application/xhtml+xml,…` ❌ | `*/*` ✅ |
+| `sec-fetch-dest` | `empty`（XHR） | `document` ❌ | `empty` ✅ |
+| `sec-fetch-mode` | `cors` | `navigate` ❌ | `cors` ✅ |
+| `sec-fetch-site` | `same-origin` | `none` ❌ | `same-origin`（令牌端点 `cross-site`）✅ |
+| `sec-ch-ua-platform` | `"Windows"`（与 UA 一致） | `"macOS"`（与 Windows UA 矛盾）❌ | `"Windows"` ✅ |
+| `priority` | 无 | `u=0, i` ❌ | 仍由档位带出（唯一残留差异，影响很小） |
+| `referer` | `https://chat.deepseek.com/` | 缺失 ❌ | 已补 ✅ |
+| `x-client-*` / `x-device-*` | 8 个头 | 一致 ✅ | 一致 ✅ |
+
+> 结论：**换档不等于对齐** —— wreq 的 `chrome136` 档发的是「地址栏导航」头，
+> 而真实客户端的业务 API 是页面内 XHR。直接切档反而会复现我们曾经认定为
+> 「自相矛盾」的组合，因此 `ClientIdentity::headers` 显式覆盖这些头。
+
+### 其余默认值
+
+| 配置 | 旧默认 | 新默认 | 依据 |
+|------|--------|--------|------|
+| `startup_health_check` | `true`（启动即发一条 completion） | `false` | 官方启动只登录 / check_device / 拉会话列表 |
+| `session_policy` | `per_request`（每轮建删） | `reuse` | 官方一个会话长期复用、几乎不删 |
+| `default_search_enabled` | `true`（无条件搜索） | `false` | 官方只有用户显式打开才搜索 |
+| `emulation` | `okhttp4_12` | `chrome136` | 官方 Web 客户端 = 桌面 Chrome |
+| `user_agent` | `DeepSeek/2.5.0 Android/35` | 桌面 Chrome/140 | 同上 |
+| `client_platform` / `client_os` | `android` | `web` | 同上 |
+| completion payload | 无 `source` | `source = "input"` | 前端 bundle：官方一定带该字段 |
+
+### 仍然存在的最大差异（prompt 形态）
+
+前端 bundle（`main.*.js`，1.4 MB）里**没有任何** `<｜Role｜>` 之类的原生标签字面量，
+唯一一处 `｜` 出现在标点正则里。结合「完成请求体只带 `prompt` + `parent_message_id`」，
+可以推断：**官方客户端只把最新一条用户消息放进 `prompt`，历史由服务端按会话组装**。
+
+而本代理为了让每轮请求自成一体，会把整段历史内联进 `prompt`（`<｜User｜>` /
+`<｜Assistant｜>` / 工具输出标签等）。这是 prompt 层面最大的一处不同，也是
+「若违规判定涉及 prompt 形态」时最可能的暴露点。
+
+**对齐方案（尚未实现，需先确认真实账号下上游对「同一会话 + parent_message_id」的语义）**：
+
+1. 复用会话（`session_policy = reuse`）时，记录上游返回的 `response_message_id`；
+2. 下一轮只发送**新增的用户消息**作为 `prompt`，并把 `parent_message_id` 指向上一条响应，
+   让上游自己组装上下文（与官方一致）；
+3. 当收到的对话不是上一轮的延续（例如换客户端、历史被改写）时，退化为「新建会话 +
+   内联历史」，保证正确性；
+4. 该改动会改变 adapter ↔ ds_core 的接口（需要把结构化消息而不是渲染好的 prompt 传下去），
+   属于较大改动，且**必须用干净账号验证**后才能设为默认。
+
+---
+
 ## 剩余差异：会话生命周期 与 启动 health_check（待干净账号验证）
 
 账号 A/B/C 全部停用后，能做的只有「把剩余差异量化并准备好实验」。把今天抓到的

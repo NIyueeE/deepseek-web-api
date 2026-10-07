@@ -14,8 +14,8 @@ use tokio::sync::RwLock;
 use crate::CoreError;
 use crate::config::{AccountConfig, DsCoreConfig};
 pub use client::{
-    ChatSessionInfo, ClientError, ClientIdentity, CompletionPayload, DsClient, EmulationProfile,
-    FetchSessionsData, HifConfig, LoginPayload, StopStreamPayload,
+    COMPLETION_SOURCE_INPUT, ChatSessionInfo, ClientError, ClientIdentity, CompletionPayload,
+    DsClient, EmulationProfile, FetchSessionsData, HifConfig, LoginPayload, StopStreamPayload,
 };
 pub use pool::{Account, AccountGuard, AccountPool, AccountStatus, PoolError};
 pub use pow::{PowError, PowSolver};

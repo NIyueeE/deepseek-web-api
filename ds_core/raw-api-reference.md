@@ -234,6 +234,25 @@ maxBackoffMs = 1000 * getFrozenFeature("hif_max_retry_interval_secs", 600);
 
 ---
 
+### 0.5 completion 请求体字段（2026-10-07 从前端 bundle 提取）
+
+真实客户端的 `/chat/completion` 请求体固定包含：
+
+```js
+{ chat_session_id, parent_message_id, model_type, prompt, ref_file_ids,
+  thinking_enabled, search_enabled, source, action, preempt }
+```
+
+- **`source`**：*用户如何发出这条消息* —— `input`（输入框回车）/ `click`（发送按钮）/
+  `keyboard` / `paste` / `drag` / `file_picker` / `search` / `landing` / `api` 等。
+  代理侧统一填 `input`（真实用户最常态的路径）。
+- **`prompt`**：**只包含最新一条用户消息的文本**。历史不在 prompt 里 ——
+  它保存在服务端会话中，靠 `parent_message_id` 串联（前端 bundle 中**没有任何**
+  `<｜Role｜>` 之类标签字面量）。本代理为了让每轮请求自成一体会把历史内联进 prompt，
+  这是 prompt 层面与真实客户端最大的一处不同（详见 `docs/development.md`）。
+
+---
+
 ## 1. 创建会话 create_session
 
 - **URL**: `POST /api/v0/chat_session/create`

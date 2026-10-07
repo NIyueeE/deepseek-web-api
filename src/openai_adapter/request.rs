@@ -280,14 +280,26 @@ mod tests {
         );
     }
 
+    /// 默认不联网搜索（对齐浏览器：官方客户端只有用户显式打开才会搜索）
     #[test]
-    fn search_enabled_by_default() {
+    fn search_disabled_by_default() {
         let body = serde_json::json!({
             "model": "deepseek-default",
             "messages": [{ "role": "user", "content": "hi" }]
         });
         let req = parse_json(body).unwrap();
-        assert!(req.search_enabled);
+        assert!(
+            !req.search_enabled,
+            "未传 web_search_options 时默认不应搜索（对齐官方客户端）"
+        );
+
+        // 客户端仍可显式开启
+        let body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "web_search_options": {}
+        });
+        assert!(parse_json(body).unwrap().search_enabled);
     }
 
     // stop 序列与 stream_options 默认值

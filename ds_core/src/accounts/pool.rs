@@ -1128,6 +1128,7 @@ async fn health_check(
         thinking_enabled: false,
         search_enabled: false,
         action: None,
+        source: super::client::COMPLETION_SOURCE_INPUT,
         preempt: false,
     };
 

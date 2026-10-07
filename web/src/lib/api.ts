@@ -248,26 +248,28 @@ export interface FullConfig {
  */
 const DEFAULTS = {
   apiBase: 'https://chat.deepseek.com/api/v0',
-  userAgent: 'DeepSeek/2.5.0 Android/35',
+  // 默认对齐浏览器（官方 Web 客户端就是一套桌面 Chrome 身份 + web 平台头）
+  userAgent:
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
   clientVersion: '2.5.0',
-  clientPlatform: 'android',
+  clientPlatform: 'web',
   clientLocale: 'zh_CN',
-  clientOs: 'android',
+  clientOs: 'web',
   clientBundleId: 'com.deepseek.chat',
   clientDeviceId: '',
   clientDeviceModel: '',
   clientTimezoneOffset: '28800',
-  emulation: 'okhttp4_12',
+  emulation: 'chrome136',
   hifEnabled: true,
-  startupHealthCheck: true,
-  sessionPolicy: 'per_request',
+  startupHealthCheck: false,
+  sessionPolicy: 'reuse',
   sessionIdleSecs: 900,
   maxInputTokens: 1048576,
   maxOutputTokens: 384000,
   maxChars: 2621440,
   responsesStoreCapacity: 256,
   responsesStoreTtlSecs: 3600,
-  defaultSearchEnabled: true,
+  defaultSearchEnabled: false,
   hourlyRequestQuota: 60,
 } as const;
 

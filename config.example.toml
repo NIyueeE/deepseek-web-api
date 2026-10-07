@@ -49,23 +49,24 @@ port = 22217
 # password = "pass3"
 # device_id = "Bjyk87PcoVWPPBrs3aHGgXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=="
 
-# 已验证通过的 User-Agent（Android 客户端模拟）
-# user_agent = "DeepSeek/2.5.0 Android/35"
+# 客户端拟态身份：**默认全部对齐真实浏览器**（官方 Web 客户端 = 一套桌面 Chrome 身份）。
 #
-# 客户端拟态身份：UA / X-Client-Version / X-Client-Platform / 登录 payload 的 os
-# 应保持一致（web ↔ 安卓）。注意 UA 用桌面 Chrome 会被 AWS WAF 以 202 challenge
-# 拦截（Rust 客户端无法执行 JS challenge），因此默认保持安卓 App 身份。
-# X-Client-Version（应用版本号）
+# 为什么默认浏览器档：我们并不知道上游依据哪些信号判定违规，因此每一项都向真实
+# 客户端靠拢（这才是最可能"伪装通过"的策略）。可用下方 emulation 切回原生 App 档。
+#
+# User-Agent（默认桌面 Chrome；Windows 平台与下方 client hints 自洽）
+# user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+# X-Client-Version（应用版本号；官方 Web 客户端同为 2.5.0）
 # client_version = "2.5.0"
-# X-Client-Platform 请求头
-# client_platform = "android"
+# X-Client-Platform 请求头（官方 Web 客户端 = web）
+# client_platform = "web"
 # X-Client-Locale 请求头
 # client_locale = "zh_CN"
 #
-# ── 以下为 2026-09 对齐真实客户端抓包结果补充的拟态字段 ──────────────────
+# ── 以下为 2026-09 / 2026-10 对齐真实客户端抓包结果补充的拟态字段 ────────
 #
 # 登录 payload 的 os 字段（与 client_platform 对应：web / android）
-# client_os = "android"
+# client_os = "web"
 # X-Client-Bundle-Id 请求头（真实客户端固定 com.deepseek.chat）
 # client_bundle_id = "com.deepseek.chat"
 # X-Device-Id 请求头 / check_device payload 使用的设备 UUID。
@@ -82,16 +83,19 @@ port = 22217
 
 # 传输层拟态档位（TLS/HTTP2 指纹 + 档位自带默认头）
 #
-#   okhttp4_12（默认）—— 原生安卓 App：默认头只有 accept / accept-language / UA，
-#                        与默认 UA（DeepSeek/… Android/…）+ client_platform=android 自洽
-#   chrome136         —— 桌面 Chrome：带 sec-ch-ua* / sec-fetch-* / 文档 accept，
-#                        必须同时把 user_agent / client_platform / client_os 都切成 web
+#   chrome136（默认）—— 桌面 Chrome：与默认 UA / client_platform=web / client_os=web 自洽
+#   okhttp4_12        —— 原生安卓 App：需同时把 user_agent 改回
+#                        "DeepSeek/2.5.0 Android/35"、client_platform / client_os 改成 android
 #
-# 背景（2026-10-07 本地 echo server 取证）：旧默认是「安卓 App UA + Chrome/macOS
-# client hints + 地址栏导航头」的自相矛盾组合，任何真实客户端都不会这样发。
-# 三种档位在 /client/settings、/users/login、/chat/create_pow_challenge、
-# /chat_session/create 上均实测可通过 WAF（无 202 challenge）。
-# emulation = "okhttp4_12"
+# 背景（2026-10-07 本地 echo server + 真实浏览器逐头比对）：
+#   - 真实客户端的业务 API 是**页面内 XHR/fetch**：accept: */*、
+#     sec-ch-ua-platform 与 UA 一致、无 sec-fetch-dest: document / priority；
+#   - 而 wreq 的 chrome136 档默认发「地址栏导航」头（document/navigate/none +
+#     accept: text/html + sec-ch-ua-platform: macOS）——本代理会**显式覆盖**这些头，
+#     改成 XHR 形态（见 ds_core 的 ClientIdentity::headers）；
+#   - 三种档位在 /client/settings、/users/login、/chat/create_pow_challenge、
+#     /chat_session/create 上均实测可通过 WAF（无 202 challenge）。
+# emulation = "chrome136"
 
 # 是否在 completion 请求上回传 x-hif-leim / x-hif-dliq 风控令牌（默认 true）
 #
@@ -107,7 +111,7 @@ port = 22217
 # 真实客户端启动只做「登录 → check_device → 拉会话列表」，**不发消息**；
 # 设为 false 可对齐该序列（账号可用性仍由登录成功 + 禁言早检保证）。
 # 仅用于风控对照实验，正常使用建议保持默认。
-# startup_health_check = true
+# startup_health_check = false
 
 # 会话策略（默认 per_request）：
 #   per_request —— 每个请求新建会话，流结束后立即删除（历史行为）
@@ -116,7 +120,7 @@ port = 22217
 # 真实客户端一个会话长期复用、几乎不删；reuse 更贴近该行为，但
 # **复用语义（同一会话内以 parent_message_id = null 继续发言）尚未用真实账号验证**，
 # 因此默认保持 per_request，仅在对照实验时开启。
-# session_policy = "per_request"
+# session_policy = "reuse"
 
 # 复用模式下会话的空闲回收秒数（0 = 只在进程退出时删除）
 # session_idle_secs = 900
@@ -181,7 +185,7 @@ port = 22217
 #   false        —— 严格遵循 OpenAI 语义：未传即关闭，不注入搜索提示词
 #
 # 显式传入 web_search_options 时，无论该值为何都会开启搜索。
-# default_search_enabled = true
+# default_search_enabled = false
 
 # ── Responses API 上下文缓存（POST /v1/responses）──────────────────────
 #

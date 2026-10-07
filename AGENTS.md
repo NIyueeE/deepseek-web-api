@@ -19,7 +19,7 @@ Rust API proxy exposing free DeepSeek model endpoints. Translates standard OpenA
 - `wasmtime` — executes DeepSeek's PoW WASM solver; the entire PoW system depends on this (pinned to 48.x, see `.cargo/audit.toml`)
 - `tiktoken-rs` — client-side prompt token counting (DeepSeek returns 0 for `prompt_tokens`)
 - `pin-project-lite` — underpins every streaming response wrapper (`ConverterStream`, `ToolCallStream`, `RepairStream`, `StopDetectStream`)
-- `axum` / `wreq` — HTTP server and client respectively; `wreq` uses BoringSSL, and the TLS/HTTP2 fingerprint is selected by the `emulation` config (`okhttp4_12` = native Android app, default; `chrome136` = desktop Chrome) so that the fingerprint matches the UA / `client_platform` identity
+- `axum` / `wreq` — HTTP server and client respectively; `wreq` uses BoringSSL, and the TLS/HTTP2 fingerprint is selected by the `emulation` config (`chrome136` = desktop Chrome, **default**; `okhttp4_12` = native Android app) so that the fingerprint matches the UA / `client_platform` identity. The preset's *header* defaults are navigation-style and are overridden in `ClientIdentity::headers` — see the capability toggles
 - `tokio` with `signal` feature — async runtime with graceful shutdown on SIGTERM/SIGINT
 
 ---
@@ -287,10 +287,10 @@ Each account runs `try_init_account()`:
 3. `health_check` — test completion (with PoW) against `default` to verify a writable session
 4. `delete_session` — always runs, including on health-check failure
 
-Steps 2–4 are skipped when `startup_health_check = false` (see the capability table): the real
-client only logs in / rotates the device token / lists sessions at startup and never sends a
-message, so this flag exists to reproduce that sequence in A/B experiments. Account validity is
-still covered by a successful login plus the mute early-check (`biz_code` 5).
+Steps 2–4 are **skipped by default** (`startup_health_check = false`, see the capability table):
+the real client only logs in / rotates the device token / lists sessions at startup and never
+sends a message. Account validity is still covered by a successful login plus the mute
+early-check (`biz_code` 5). Set the flag back to `true` for the historical probe.
 
 There is **no retry inside `init()`** and **no `InitFailed` state** — a failure immediately
 marks the account `Invalid`. The states are `Idle` / `Busy` / `Error` / `Invalid`.
@@ -384,9 +384,9 @@ native `<｜Role｜>` tags via `parse_native_blocks()`.
 Request fields mapped in `request/resolver.rs`:
 - **Reasoning**: defaults to `"high"` (on). Set `"none"` to disable.
 - **Web search**: `web_search_options` explicitly enables it. When omitted, the
-  `default_search_enabled` config flag decides (`true` by default, preserving the
-  historical always-on behaviour; set `false` for strict OpenAI semantics). Prompt text
-  containing an HTTP URL also forces search mode on.
+  `default_search_enabled` config flag decides (`false` by default = official-client
+  behaviour: search only when the user turns it on). Prompt text containing an HTTP URL
+  also forces search mode on.
 - **File upload**: data URL content parts → auto upload to session; HTTP URLs → search mode.
 - **Response format**: `response_format` → JSON/schema text injection in prompt.
 - **Login `device_id`**: per-account field forwarded into the `/users/login` payload.
@@ -407,12 +407,16 @@ Request fields mapped in `request/resolver.rs`:
   are skipped; if every account is over budget the request returns 429 instead of
   hammering upstream. This exists because upstream mutes accounts after a few hundred
   requests per hour, and muting is **delayed** — see `docs/development.md`.
-- **Transport emulation** (`emulation`, default `okhttp4_12`): the TLS/HTTP2 fingerprint and
-  the profile's default request headers. `okhttp4_12` keeps the "native Android app"
-  identity self-consistent (no `sec-ch-ua*` / `sec-fetch-*`, `accept: */*`);
-  `chrome136` suits a web identity (Chrome UA + `client_platform = web` + `client_os = web`).
-  The 2026-09 note that "desktop Chrome UA is blocked by WAF 202" no longer holds — see
-  `docs/development.md` (2026-10-07 identity probe).
+- **Transport emulation** (`emulation`, default `chrome136`): the TLS/HTTP2 fingerprint plus the
+  profile's default headers. **Defaults now describe a desktop browser** (Chrome/140 Windows UA,
+  `client_platform = web`, `client_os = web`) because the official web client is exactly that.
+  Switching the profile alone is *not* enough: wreq's `chrome136` preset sends **address-bar
+  navigation** headers (`sec-fetch-dest: document`, `mode: navigate`, `accept: text/html,…`,
+  `priority`, `sec-ch-ua-platform: "macOS"`), so `ClientIdentity::headers()` explicitly overrides
+  them with the captured **XHR** set (`accept: */*`, `sec-fetch-dest: empty`, `mode: cors`,
+  `site: same-origin` — `cross-site` for token endpoints — `sec-ch-ua-platform: "Windows"`,
+  plus `referer`). Header-by-header evidence: `docs/development.md` (echo server vs capture).
+  The 2026-09 note that "desktop Chrome UA is blocked by WAF 202" no longer holds.
 - **HIF risk tokens** (`hif_enabled`, default true): the official client polls **two**
   isomorphic endpoints (`hif-leim.deepseek.com` / `hif-dliq.deepseek.com`), caches both
   (`hif_leim_cached` / `hif_dliq_cached`, TTL from `x-hif-ttl`, default 600s) and attaches
@@ -420,16 +424,17 @@ Request fields mapped in `request/resolver.rs`:
   one bucket per device identity holding both tokens, exponential failure backoff (30s → 10min),
   `hif-dliq` being NXDOMAIN in some networks is expected and simply skips that header.
   Disabling it is for A/B experiments only.
-- **Startup health check** (`startup_health_check`, default true): when false, init skips the
-  create-session → completion → delete-session probe (official clients send no message at
-  startup). For A/B experiments only.
-- **Session policy** (`session_policy`, default `per_request`): `reuse` keeps each account's
+- **Startup health check** (`startup_health_check`, default **false**): when false, init skips the
+  create-session → completion → delete-session probe — the official client sends no message at
+  startup. Set to `true` for the historical behaviour.
+- **Session policy** (`session_policy`, default **`reuse`**): `reuse` keeps each account's
   session and reuses it for later requests instead of creating and deleting one per request
   (the official client reuses a single session indefinitely). Sessions are returned on normal
   stream end, invalidated on any request failure (`ReuseGuard`), reaped when idle for
   `session_idle_secs` (0 = only at shutdown) and unconditionally on `DsCore::shutdown`.
   The upstream semantics of reuse (continuing with `parent_message_id = null`) are **not yet
-  verified with a real account**, hence the default stays `per_request`.
+  verified with a real account** — it is the default because it matches the official client,
+  not because it has been proven safe.
 
 ### Overloaded Retry
 
@@ -628,7 +633,7 @@ Follow `docs/code-style.md`:
 |-------|---------|--------------------|
 | WASM load failure | `PowError::Execution` on startup | DeepSeek recompiled WASM. PowSolver now uses dynamic export probing (no hardcoded symbols). Update `wasm_url` in `config.toml` if WASM URL changed |
 | WAF blocking (non-US) | AWS WAF Challenge response (status 202) | Configure a non-US proxy in `config.toml` `[proxy]` |
-| WAF blocking (fingerprint) | HTTP 403 / connection reset / 202 challenge | `wreq` uses BoringSSL; the fingerprint is chosen by `emulation` (`okhttp4_12` default, `chrome136` for a web identity). Verify the identity is self-consistent (UA ↔ `client_platform` ↔ emulation) with `cargo run -p ds_core --example identity_probe` — it hits only unauthenticated endpoints, no account traffic |
+| WAF blocking (fingerprint) | HTTP 403 / connection reset / 202 challenge | `wreq` uses BoringSSL; the fingerprint is chosen by `emulation` (`chrome136` default = desktop Chrome, matching the default web identity; `okhttp4_12` for the Android-app identity). Verify the identity is self-consistent (UA ↔ `client_platform` ↔ emulation) with `cargo run -p ds_core --example identity_probe` — it hits only unauthenticated endpoints, no account traffic |
 | Account init failure | All accounts stuck in init | Bad credentials (login fails first) or rate-limited (too many sessions). Check `[accounts]` in config |
 | Login fails with `RISK_DEVICE_DETECTED` (biz_code 11) | `客户端错误: Business error: code=11, msg=RISK_DEVICE_DETECTED` during account init | DeepSeek requires a browser-registered device fingerprint. Capture `device_id` from a real browser login (`POST /api/v0/users/login`) and set it per account in `config.toml` / the admin panel |
 | Account init fails with `user is muted` (biz_code 5) | `账号配置错误: 账号异常(muted/limited)`, account left in `invalid` | The account is temporarily muted upstream (response carries `mute_until`, typically days). It cannot be recovered by re-login — stop using the account until `mute_until` passes; further retries do not speed it up. Muting is **delayed**, so "ran N requests without being muted" is not evidence that a change avoids risk control — see `docs/development.md` |
@@ -670,7 +675,7 @@ Follow `docs/code-style.md`:
 | HTTP server/routes | `src/server/` | handlers → stream → error; `request_id_middleware` mints `req-{n}` + `x-request-id` |
 | Idempotency cache | `src/server/idempotency.rs` | `Idempotency-Key` scope/conflict/replay rules + `RecordingStream` for SSE replay |
 | PoW WASM solver | `ds_core/src/accounts/pow.rs` | wasmtime loading, dynamic export probing, DeepSeekHashV1 |
-| DeepSeek HTTP client | `ds_core/src/accounts/client.rs` | `Envelope::into_result()`, WAF detection, all API methods |
+| DeepSeek HTTP client | `ds_core/src/accounts/client.rs` | `Envelope::into_result()`, WAF detection, all API methods. `ClientIdentity::headers(FetchSite)` also overrides wreq's navigation-style defaults with the captured XHR header set; `CompletionPayload` carries `source = "input"` like the official client |
 | HIF risk-control tokens | `ds_core/src/accounts/hif.rs` | `x-hif-leim` **and** `x-hif-dliq`: two isomorphic no-auth endpoints, TTL from `x-hif-ttl`, per-device buckets, attached to SSE requests only (whichever is available). Missing them marks the request as a non-official client — see `docs/development.md` (2026-10-07) |
 | Unified debug CLI | `examples/adapter_cli.rs` | Modes: chat/raw/compare/concurrent/status/models |
 | Risk-token probe | `examples/hif_probe.rs` | Checks the `hif-leim` endpoint only — **no account traffic** (`hif-dliq` is NXDOMAIN in some networks; the browser also fails to fetch it there) |

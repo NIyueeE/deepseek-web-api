@@ -285,10 +285,13 @@ const fn default_hourly_request_quota() -> u64 {
 
 /// 未传 `web_search_options` 时默认是否开启搜索模式。
 ///
-/// 默认 `true`：与历史行为一致（此前 resolver 无条件返回 true）。
-/// 文档曾声称「省略即关闭」，但代码从未如此实现；这里把开关做实并保持兼容。
+/// 默认 `false`（对齐浏览器）：官方客户端只有用户**显式打开**联网搜索才会搜索。
+/// 历史上本代理默认 `true`（无条件搜索），那会产生真实用户不会有的请求形态；
+/// 需要旧行为可在配置里显式设为 `true`。
 const fn default_search_enabled() -> bool {
-    true
+    // 对齐浏览器：官方客户端只有用户显式打开联网搜索才会搜索，
+    // 默认不搜。客户端仍可用 `web_search_options` 显式开启。
+    false
 }
 
 /// Responses API 上下文缓存条数上限
@@ -311,8 +314,11 @@ fn default_wasm_url() -> String {
     "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm".to_string()
 }
 
+/// 默认 UA：桌面 Chrome（与默认 `client_platform = web` / `emulation = chrome136` 自洽）
+///
+/// 依据 2026-10-07 的真实浏览器抓包：官方 Web 客户端就是一套 Chrome 身份。
 fn default_user_agent() -> String {
-    "DeepSeek/2.5.0 Android/35".to_string()
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36".to_string()
 }
 
 fn default_client_version() -> String {
@@ -320,7 +326,8 @@ fn default_client_version() -> String {
 }
 
 fn default_client_platform() -> String {
-    "android".to_string()
+    // 官方 Web 客户端发 `web`（抓包：x-client-platform: web）
+    "web".to_string()
 }
 
 fn default_client_locale() -> String {
@@ -336,7 +343,8 @@ fn default_client_timezone_offset() -> String {
 }
 
 fn default_client_os() -> String {
-    "android".to_string()
+    // 登录 payload 的 os 字段；官方 Web 客户端为 `web`
+    "web".to_string()
 }
 
 const fn default_hif_enabled() -> bool {
@@ -345,15 +353,20 @@ const fn default_hif_enabled() -> bool {
 
 /// 启动健康检查开关
 ///
-/// 默认 `true`：保持历史行为（初始化时就验证账号能完成一次推理）。
-/// 设为 `false` 可对齐真实客户端的启动序列（只建会话/不发消息），用于对照实验。
+/// 默认 `false`：**对齐真实客户端**的启动序列 —— 官方客户端启动只做
+/// 「登录 → check_device → 拉会话列表」，不发任何消息；而我们的历史上会在初始化时
+/// 发一条 completion（"启动即发消息"是真实用户不会有的行为）。
+/// 账号可用性仍由登录成功 + 禁言早检（biz_code 5）保证；需要旧行为可显式设为 `true`。
 const fn default_startup_health_check() -> bool {
-    true
+    false
 }
 
-/// 会话策略（默认 `per_request` = 保持「每轮建删」的历史行为）
+/// 会话策略：默认 `reuse`（对齐真实客户端）
+///
+/// 官方客户端一个会话长期复用、几乎不删；而「每个请求建会话 → 发一条 → 立刻删」
+/// 是真实用户不会有的模式。需要旧行为可显式设为 `per_request`。
 fn default_session_policy() -> String {
-    "per_request".to_string()
+    "reuse".to_string()
 }
 
 /// 复用模式下会话空闲回收时间（默认 900s = 15 分钟）
@@ -362,7 +375,8 @@ const fn default_session_idle_secs() -> u64 {
 }
 
 fn default_emulation() -> String {
-    "okhttp4_12".to_string()
+    // 默认对齐浏览器：TLS/HTTP2 指纹 + 默认头都用 chrome136
+    "chrome136".to_string()
 }
 
 /// HTTP 服务器配置（必填）

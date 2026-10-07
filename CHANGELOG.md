@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### ⚠️ 默认配置改为「对齐浏览器」（行为变更）
+
+> 原则：**我们并不知道上游依据哪些信号判定违规**，因此每一项都向真实客户端靠拢 ——
+> 这是目前唯一可操作的「最可能伪装通过」的策略。需要旧行为时，把下列各项显式写回旧值即可。
+
+- **身份与传输层**：`emulation` 默认 `chrome136`、`user_agent` 默认桌面
+  Chrome/140（Windows）、`client_platform` / `client_os` 默认 `web`
+  （依据 2026-10-07 真实浏览器抓包：官方 Web 客户端就是一套桌面 Chrome 身份）
+- **显式改为「页面内 XHR」头形态**：wreq 的 `chrome136` 档默认发地址栏导航头
+  （`sec-fetch-dest: document` / `mode: navigate` / `site: none`、`accept: text/html,…`、
+  `priority`、`sec-ch-ua-platform: macOS` 配 Windows UA）；本代理现在把它们覆盖为
+  抓包实测的 XHR 形态（`accept: */*`、`sec-fetch-dest: empty`、`mode: cors`、
+  `site: same-origin`（令牌端点用 `cross-site`）、`sec-ch-ua-platform: "Windows"`，
+  并去掉 `priority`）。逐头比对证据见 `docs/development.md`
+- **启动不再发消息**：`startup_health_check` 默认 `false`（官方客户端启动只做
+  登录 / check_device / 拉会话列表）
+- **会话复用**：`session_policy` 默认 `reuse`（官方客户端一个会话长期复用、几乎不删；
+  空闲 `session_idle_secs`=900s 回收，退出时全量回收）
+- **不再默认联网搜索**：`default_search_enabled` 默认 `false`（官方客户端只有用户
+  显式打开搜索才会搜索）；客户端仍可用 `web_search_options` 显式开启
+- **completion payload 补齐 `source` 字段**：从前端 bundle 提取到官方请求一定带
+  `source`（取值是用户如何发出消息：`input` / `click` / `paste` …），代理按主路径填 `input`
+- 回退到旧行为：`emulation = "okhttp4_12"`、
+  `user_agent = "DeepSeek/2.5.0 Android/35"`、`client_platform = "android"`、
+  `client_os = "android"`、`startup_health_check = true`、
+  `session_policy = "per_request"`、`default_search_enabled = true`
+
+**仍存在的差异（下一步候选，尚未实现）**：官方客户端只把**最新一条用户消息**放进
+`prompt`（历史在服务端会话里，靠 `parent_message_id` 串联），而本代理仍把整段历史
+内联进 prompt（含 `<｜Role｜>` 原生标签）。前端 bundle 里**完全没有**这类标签字面量 ——
+若违规判定涉及 prompt 形态，这是最大的一处不同。
+
 ### 风控对齐（新增，**默认行为不变**，仅用于对照实验）
 
 - **双风控令牌 `x-hif-dliq`**：从官方前端 bundle 提取到真实客户端有**两个**同构轮询器

@@ -260,8 +260,17 @@ pub struct CompletionPayload {
     pub search_enabled: bool,
     /// 真实客户端固定发送该字段（会话首条为 null）
     pub action: Option<serde_json::Value>,
+    /// 消息来源（官方前端的输入方式：`input` / `click` / `keyboard` / `paste` …）
+    ///
+    /// 2026-10-07 从前端 bundle 提取：真实客户端的 completion payload 一定带
+    /// `source`，取值是**用户如何发出这条消息**。代理侧按「键盘输入 + 发送」的
+    /// 主路径填 `input`（真实用户最常态的方式）。
+    pub source: &'static str,
     pub preempt: bool,
 }
+
+/// 代理侧统一使用的 `source` 取值（对齐真实客户端的主路径：输入框输入）
+pub const COMPLETION_SOURCE_INPUT: &str = "input";
 
 #[derive(Debug, Serialize)]
 #[allow(dead_code)]
@@ -317,14 +326,18 @@ const DEFAULT_HIF_DLIQ_URL: &str = "https://hif-dliq.deepseek.com/query";
 /// 关键在于**自洽**：安卓 App UA 配 Chrome/macOS 的 client hints 与
 /// 「地址栏导航」头（`sec-fetch-dest: document`、`accept: text/html,…`）是
 /// 任何真实客户端都不会有的组合（2026-10-07 本地 echo server 取证）。
+///
+/// **默认档位是浏览器**（`chrome136`）：官方 Web 客户端就是一套 Chrome 身份，
+/// 而「对齐真实客户端」是降低风控暴露面的唯一可操作原则 —— 我们并不知道上游
+/// 具体依据哪些信号判定违规，因此每一项都向真实客户端靠拢（见 `docs/development.md`）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EmulationProfile {
     /// 原生安卓 App（OkHttp）：默认头只有 `accept: */*` / `accept-language` / UA，
     /// 与 `user_agent = "DeepSeek/… Android/…"` + `client_platform = android` 自洽
-    #[default]
     OkHttp4_12,
-    /// 桌面 Chrome：带 `sec-ch-ua*` / `sec-fetch-*` / 文档 accept，
+    /// 桌面 Chrome（默认）：带 `sec-ch-ua*` / `sec-fetch-*` / 文档 accept，
     /// 需要同时把 UA / `client_platform` / `client_os` 切成 web 才自洽
+    #[default]
     Chrome136,
 }
 
@@ -343,6 +356,24 @@ impl EmulationProfile {
         match self {
             Self::OkHttp4_12 => Emulation::OkHttp4_12,
             Self::Chrome136 => Emulation::Chrome136,
+        }
+    }
+}
+
+/// 请求的发起语境（决定 `sec-fetch-site`）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchSite {
+    /// 同源 XHR（`chat.deepseek.com` 的业务 API）
+    SameOrigin,
+    /// 跨源 XHR（`hif-leim.deepseek.com` 之类的风控令牌端点）
+    CrossSite,
+}
+
+impl FetchSite {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::SameOrigin => "same-origin",
+            Self::CrossSite => "cross-site",
         }
     }
 }
@@ -367,9 +398,17 @@ pub struct ClientIdentity {
 impl ClientIdentity {
     /// 客户端通用请求头（登录、鉴权请求与 HIF 取令牌共用）
     ///
-    /// 对齐真实客户端（2026-09 抓包）：除 UA 外还带 7 个 x-* 头，
+    /// 对齐真实客户端（2026-10-07 真实浏览器抓包）：除 UA 外还带 7 个 x-* 头，
     /// 缺这些头会明显拉低「像真实客户端」的拟态保真度。
-    fn headers(&self) -> Result<wreq::header::HeaderMap, ClientError> {
+    ///
+    /// **同时显式覆盖传输层档位自带的「地址栏导航」头**：wreq 的 `chrome136`
+    /// 档默认发 `sec-fetch-dest: document` / `sec-fetch-mode: navigate` /
+    /// `sec-fetch-site: none` / `accept: text/html,…` / `priority`，
+    /// 且 `sec-ch-ua-platform` 固定 `"macOS"`（与 Windows UA 矛盾）——
+    /// 而真实客户端的业务 API 是页面内的 **XHR/fetch**
+    /// （抓包：`accept: */*`、`sec-ch-ua-platform: "Windows"`、无 `priority`）。
+    /// 本地 echo server 逐头比对见 `docs/development.md`。
+    fn headers(&self, site: FetchSite) -> Result<wreq::header::HeaderMap, ClientError> {
         let mut h = wreq::header::HeaderMap::new();
         let mut put = |name: &'static str, value: &str| -> Result<(), ClientError> {
             h.insert(
@@ -394,6 +433,20 @@ impl ClientIdentity {
                 &self.client_locale.replace('_', "-"),
             )?;
         }
+        // 官方 Web 客户端对每个 API 请求都带 Referer（抓包：https://chat.deepseek.com/）
+        put(wreq::header::REFERER.as_str(), "https://chat.deepseek.com/")?;
+        // —— 覆盖档位默认的「导航头」，改成页面内 fetch/XHR 的真实形态 ——
+        put(wreq::header::ACCEPT.as_str(), "*/*")?;
+        put("Sec-Fetch-Dest", "empty")?;
+        put("Sec-Fetch-Mode", "cors")?;
+        put("Sec-Fetch-Site", site.as_str())?;
+        // client hints 必须与 UA 自洽（UA 是 Windows Chrome/140）
+        put(
+            "Sec-Ch-Ua",
+            "\"Chromium\";v=\"140\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"140\"",
+        )?;
+        put("Sec-Ch-Ua-Mobile", "?0")?;
+        put("Sec-Ch-Ua-Platform", "\"Windows\"")?;
         Ok(h)
     }
 }
@@ -452,7 +505,7 @@ impl DsClient {
 
         let http = builder.build().expect("构建 HTTP 客户端失败");
         let hif = hif.enabled.then(|| {
-            let headers = identity.headers().unwrap_or_else(|e| {
+            let headers = identity.headers(FetchSite::CrossSite).unwrap_or_else(|e| {
                 warn!(target: "ds_core::client", "客户端头构造失败，HIF 取令牌将不带拟态头: {e}");
                 wreq::header::HeaderMap::new()
             });
@@ -522,7 +575,7 @@ impl DsClient {
 
     /// 客户端通用请求头（登录与鉴权请求共用）
     fn client_headers(&self) -> Result<wreq::header::HeaderMap, ClientError> {
-        self.identity.headers()
+        self.identity.headers(FetchSite::SameOrigin)
     }
 
     /// 在 completion（SSE）请求上追加风控令牌头（`x-hif-leim` + `x-hif-dliq`）
@@ -982,11 +1035,24 @@ mod tests {
             assert!(h.contains_key(name), "缺少请求头 {name}");
         }
         assert_eq!(h["x-client-version"], "2.5.0");
-        assert_eq!(h["x-client-platform"], "android");
         assert_eq!(h["x-device-model"], "");
         assert_eq!(h["x-client-timezone-offset"], "28800");
         // X-Device-Id 必须是 UUID 形态（api_base 派生）
         assert_eq!(h["x-device-id"].len(), 36);
+
+        // 业务 API 必须是**页面内 XHR** 形态，而不是地址栏导航：
+        // 真实浏览器抓包为 accept: */*、sec-ch-ua-platform 与 UA 一致、
+        // 不带 sec-fetch-dest: document / priority（2026-10-07 echo server 比对）
+        assert_eq!(h["accept"], "*/*");
+        assert_eq!(h["sec-fetch-dest"], "empty");
+        assert_eq!(h["sec-fetch-mode"], "cors");
+        assert_eq!(h["sec-fetch-site"], "same-origin");
+        assert_eq!(h["sec-ch-ua-platform"], "\"Windows\"");
+        assert_eq!(h["referer"], "https://chat.deepseek.com/");
+        assert!(
+            !h.contains_key("priority"),
+            "不应带地址栏导航才有的 priority 头"
+        );
     }
 
     #[test]
@@ -1051,8 +1117,8 @@ mod tests {
         assert_eq!(EmulationProfile::from_config("nope"), None);
         assert_eq!(
             EmulationProfile::default(),
-            EmulationProfile::OkHttp4_12,
-            "默认档位必须是自洽的原生 App 指纹"
+            EmulationProfile::Chrome136,
+            "默认档位对齐浏览器（chrome136）"
         );
     }
 
