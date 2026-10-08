@@ -694,6 +694,7 @@ Follow `docs/code-style.md`:
 | Scripted regression test | `just adapter-cli -- source examples/adapter_cli-script.txt` | Runs all JSON samples in sequence |
 | Docker deployment | `docker/Dockerfile` + `docker/entrypoint.sh` + `docker/docker-compose.yaml` | Pre-built ghcr.io image, bind mounts for config/data. First-run config seeding lives in the entrypoint (bind mount shadows the baked config); ≤ v0.5.1 images need a manual `cp` |
 | e2e scenario test framework | `py-e2e-tests/` | JSON-driven scenarios with checks |
+| Risk-control experiment kit | `scripts/risk-experiment/` | `just verify-payloads` = mock-upstream payload assertions (zero account traffic, covers session reuse / delta prompt / tools / replay); `probe-account.sh` = 3-request minimal smoke against a real account + low-frequency check plan; `extract-device.py` = pull the Shumei `device_id` out of a browser capture. See its README before touching a real account |
 | CI pipeline | `.github/workflows/ci.yml` | `changes` gate + `build-frontend` + `check` + `test` + `security` |
 | Dependency audit policy | `.cargo/audit.toml` | Documented upstream warnings that cannot be fixed here (wreq 5.x yanked, transitive lru unsound) |
 | Dependency licence/ban policy | `deny.toml` | cargo-deny: licence allow-list, banned crates, registry sources. `graph.targets` is restricted to the 5 shipped targets so Windows-only transitive crates don't skew licence checks; `[[licenses.clarify]]` pins `wreq-util` (its `GPL-3.0` SPDX id is deprecated) |

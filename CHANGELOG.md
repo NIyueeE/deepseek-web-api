@@ -64,6 +64,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - 三个开关都进了 `config.example.toml`（含 docker 副本）、管理面板（校验测试覆盖）、
   `AGENTS.md` 与本文档
 
+### 新增：风控对照实验工具（`scripts/risk-experiment/`）
+
+- `just verify-payloads`：用**假上游**断言请求形态（零账号流量）—— 新建会话 / 会话复用
+  增量发送 / 带工具 / 重复请求四个用例，逐条打印结论；改请求链路后先跑它；
+- `probe-account.sh`：真实账号**最小流量**冒烟（3 次请求：OpenAI / Anthropic / Responses
+  流式）+ 打印低频复查计划；`--dry-run` 可先看计划不发请求；
+- `check-plan.sh`：打印 +30min / +2h / +6h / +24h 的复查时间与命令（各 1 次登录）；
+- `extract-device.py`：从浏览器抓包提取数美 `device_id`，生成可直接粘贴的账号配置块；
+- `mock_upstream.py`：假 DeepSeek 后端（含真实 PoW challenge 四元组，伪造的 challenge
+  永远无解，见 `ds_core/raw-api-reference.md` §3）。
+
 ### 验证更正（2026-10-07 13:10 UTC）
 
 - **撤回「v0.5.0 未触发处罚」的结论**：验证账号 `1460183479@qq.com` 在 **+3h17m 仍正常**、

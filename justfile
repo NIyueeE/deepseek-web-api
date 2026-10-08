@@ -19,6 +19,11 @@ check:
   scripts/check-lint-exemptions.sh
   scripts/check-config-drift.sh
 
+# 用假上游校验请求形态（零账号流量）：新建/复用/工具/重复四个用例
+# 前置: cargo build（脚本默认用 target/debug/ds-free-api）
+verify-payloads:
+  bash scripts/risk-experiment/verify-payloads.sh target/debug/ds-free-api
+
 # Build + lint frontend (bun install --frozen-lockfile, bun run typecheck + build + lint)
 check-web:
   cd web && bun install --frozen-lockfile && bun run typecheck && bun run lint && bun run check:locales && bun run check:config-parity && bun run build

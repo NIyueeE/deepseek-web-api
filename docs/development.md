@@ -715,9 +715,17 @@ UA / `client_platform` / `client_os` 切成 web，则应同时设 `emulation = "
 第一个参数，写成 `-c <config> <email>` 会静默检查配置里的**所有**账号 —— 与
 「一次只用一个账号」的纪律冲突，已修。
 
-**下一步的正确实验设计**（待有干净账号时执行）：
+**下一步的正确实验设计**（待有干净账号时执行）——已脚本化，见
+`scripts/risk-experiment/README.md`：
 
-1. 账号 A：全新账号，只跑本代理（最小流量），观察 ≥24h；
+| 步骤 | 命令 |
+|------|------|
+| 改动请求链路后的零成本自检（假上游，无需账号） | `just verify-payloads` |
+| 新账号注册设备指纹（真实浏览器抓包 → 配置块） | `scripts/risk-experiment/extract-device.py capture.json <email>` |
+| 最小流量冒烟（3 次请求：OpenAI / Anthropic / Responses） | `scripts/risk-experiment/probe-account.sh -c config.toml` |
+| 低频复查计划（+30min / +2h / +6h / +24h） | `scripts/risk-experiment/check-plan.sh -c config.toml --email <email>` |
+
+1. 账号 A：全新账号，只跑本代理（步骤 2 的 3 次请求），之后停服只做登录复查；
 2. 账号 B：全新账号，只用官方浏览器做同样强度的使用，作为对照组；
 3. 两组都低频复查（≤3 次/天），记录 `is_muted` / `mute_until` / 封禁提示语；
 4. 只有「A 长期正常且 B 也正常」时，才能说本代理的封号风险与官方客户端接近。
